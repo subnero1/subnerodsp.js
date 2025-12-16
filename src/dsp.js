@@ -24,13 +24,16 @@ function validatePowerOf2(nperseg) {
 
 /**
  * Generates a Hann window of the specified length.
+ * Uses periodic version (matches SciPy's default for spectral estimation).
  * @param {number} length - The length of the window
  * @returns {number[]} The Hann window array
  */
 function hannWindow(length) {
   const window = new Array(length);
   for (let n = 0; n < length; n++) {
-    window[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (length - 1));
+    // Periodic window: 0.5 - 0.5 * cos(2*pi*n / N)
+    // This matches scipy's default for spectral estimation
+    window[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / length);
   }
   return window;
 }
@@ -45,14 +48,7 @@ function detrendConstant(segment) {
   return segment.map(val => val - mean);
 }
 
-/**
- * Computes the sum of squared window values (for normalization).
- * @param {number[]} window - The window array
- * @returns {number} The sum of squared window values
- */
-function windowSumSquared(window) {
-  return window.reduce((sum, val) => sum * sum + val * val, 0);
-}
+
 
 /**
  * Extracts overlapping segments from a signal.
@@ -201,8 +197,9 @@ export function welch(x, {
   const numFreqs = Math.floor(nfft / 2) + 1;
   const psdSum = new Array(numFreqs).fill(0);
 
-  // Compute window sum for normalization
-  const windowSum = windowArray.reduce((sum, val) => sum + val * val, 0);
+  // Compute window normalization factors
+  const windowSumSquares = windowArray.reduce((sum, val) => sum + val * val, 0);
+  const windowSum = windowArray.reduce((sum, val) => sum + val, 0);
 
   // Process each segment
   for (const segment of segments) {
@@ -248,7 +245,8 @@ export function welch(x, {
     // Apply scaling
     if (scaling === 'density') {
       // Power spectral density: V²/Hz
-      psd[i] = psd[i] / (fs * windowSum);
+      // Normalize by fs * sum(window^2)
+      psd[i] = psd[i] / (fs * windowSumSquares);
 
       // Double the power for non-DC and non-Nyquist bins (one-sided spectrum)
       if (i > 0 && i < numFreqs - 1) {
@@ -256,6 +254,7 @@ export function welch(x, {
       }
     } else if (scaling === 'spectrum') {
       // Power spectrum: V²
+      // Normalize by (sum(window))^2
       psd[i] = psd[i] / (windowSum * windowSum);
 
       // Double the power for non-DC and non-Nyquist bins (one-sided spectrum)
@@ -372,8 +371,9 @@ export function spectrogram(x, {
   const numFreqs = Math.floor(nfft / 2) + 1;
   const numTimes = segments.length;
 
-  // Compute window sum for normalization
-  const windowSum = windowArray.reduce((sum, val) => sum + val * val, 0);
+  // Compute window normalization factors
+  const windowSumSquares = windowArray.reduce((sum, val) => sum + val * val, 0);
+  const windowSum = windowArray.reduce((sum, val) => sum + val, 0);
 
   // Initialize spectrogram array [frequency][time]
   const spec = new Array(numFreqs);
@@ -423,18 +423,23 @@ export function spectrogram(x, {
     // Store results based on mode
     for (let i = 0; i < numFreqs; i++) {
       if (mode === 'magnitude') {
-        spec[i][segIdx] = magnitudes[i];
+        // For magnitude mode, normalize by sqrt(sum(window^2) * fs)
+        // This matches scipy's scaling
+        const scale = Math.sqrt(windowSumSquares * fs);
+        spec[i][segIdx] = magnitudes[i] / scale;
       } else if (mode === 'psd') {
         // Compute power spectral density
         let psdValue = magnitudes[i] * magnitudes[i];
 
         if (scaling === 'density') {
-          psdValue = psdValue / (fs * windowSum);
+          // Normalize by fs * sum(window^2)
+          psdValue = psdValue / (fs * windowSumSquares);
           // Double for non-DC and non-Nyquist bins (one-sided spectrum)
           if (i > 0 && i < numFreqs - 1) {
             psdValue *= 2;
           }
         } else if (scaling === 'spectrum') {
+          // Normalize by (sum(window))^2
           psdValue = psdValue / (windowSum * windowSum);
           // Double for non-DC and non-Nyquist bins (one-sided spectrum)
           if (i > 0 && i < numFreqs - 1) {
