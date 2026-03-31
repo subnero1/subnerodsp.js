@@ -1,6 +1,24 @@
 import { assertEquals, assertThrows, assertAlmostEquals } from "jsr:@std/assert";
 import { welch, spectrogram } from "./dsp.js";
 
+function makeSineSignal(length, fs = 1000, frequency = 10) {
+  return new Array(length).fill(0).map((_, i) => Math.sin(2 * Math.PI * frequency * i / fs));
+}
+
+function assertArrayAlmostEquals(actual, expected, tolerance = 1e-10) {
+  assertEquals(actual.length, expected.length);
+  for (let i = 0; i < actual.length; i++) {
+    assertAlmostEquals(actual[i], expected[i], tolerance);
+  }
+}
+
+function assertMatrixAlmostEquals(actual, expected, tolerance = 1e-10) {
+  assertEquals(actual.length, expected.length);
+  for (let row = 0; row < actual.length; row++) {
+    assertArrayAlmostEquals(actual[row], expected[row], tolerance);
+  }
+}
+
 /**
  * Test power-of-2 validation for welch function.
  */
@@ -212,8 +230,46 @@ Deno.test("welch throws error for empty signal", () => {
   assertThrows(
     () => welch([]),
     Error,
-    "Input signal x must be a non-empty array"
+    "Input signal x must be a non-empty array or typed array"
   );
+});
+
+/**
+ * Test welch accepts Float32Array input.
+ */
+Deno.test("welch accepts Float32Array input", () => {
+  const signal = Float32Array.from(makeSineSignal(1000));
+
+  const result = welch(signal, { nperseg: 256 });
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.psd.length, 129);
+});
+
+/**
+ * Test welch accepts Float64Array input.
+ */
+Deno.test("welch accepts Float64Array input", () => {
+  const signal = Float64Array.from(makeSineSignal(1000));
+
+  const result = welch(signal, { nperseg: 256 });
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.psd.length, 129);
+});
+
+/**
+ * Test welch returns the same result for Array and Float32Array input.
+ */
+Deno.test("welch matches Array and Float32Array input", () => {
+  const signal = makeSineSignal(2048, 1000, 100);
+  const float32Signal = Float32Array.from(signal);
+
+  const arrayResult = welch(signal, { fs: 1000, nperseg: 512, nfft: 512 });
+  const typedResult = welch(float32Signal, { fs: 1000, nperseg: 512, nfft: 512 });
+
+  assertArrayAlmostEquals(typedResult.frequencies, arrayResult.frequencies, 1e-12);
+  assertArrayAlmostEquals(typedResult.psd, arrayResult.psd, 1e-6);
 });
 
 /**
@@ -350,6 +406,45 @@ Deno.test("spectrogram uses nperseg/8 as default noverlap", () => {
 
   // Should have same number of time bins
   assertEquals(result1.times.length, result2.times.length);
+});
+
+/**
+ * Test spectrogram accepts Float32Array input.
+ */
+Deno.test("spectrogram accepts Float32Array input", () => {
+  const signal = Float32Array.from(makeSineSignal(1000));
+
+  const result = spectrogram(signal, { nperseg: 256, mode: 'magnitude' });
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.spectrogram.length, 129);
+});
+
+/**
+ * Test spectrogram accepts Float64Array input.
+ */
+Deno.test("spectrogram accepts Float64Array input", () => {
+  const signal = Float64Array.from(makeSineSignal(1000));
+
+  const result = spectrogram(signal, { nperseg: 256, mode: 'psd' });
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.spectrogram.length, 129);
+});
+
+/**
+ * Test spectrogram returns the same result for Array and Float32Array input.
+ */
+Deno.test("spectrogram matches Array and Float32Array input", () => {
+  const signal = makeSineSignal(2048, 1000, 100);
+  const float32Signal = Float32Array.from(signal);
+
+  const arrayResult = spectrogram(signal, { fs: 1000, nperseg: 256, nfft: 256, mode: 'magnitude' });
+  const typedResult = spectrogram(float32Signal, { fs: 1000, nperseg: 256, nfft: 256, mode: 'magnitude' });
+
+  assertArrayAlmostEquals(typedResult.frequencies, arrayResult.frequencies, 1e-12);
+  assertArrayAlmostEquals(typedResult.times, arrayResult.times, 1e-12);
+  assertMatrixAlmostEquals(typedResult.spectrogram, arrayResult.spectrogram, 1e-6);
 });
 
 /**

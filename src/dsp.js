@@ -1,6 +1,56 @@
 import FFT from 'fft.js';
 
 /**
+ * Checks whether a value is a plain array or a numeric typed array.
+ * @param {unknown} value - The value to validate
+ * @returns {boolean} True if the value supports numeric indexed access
+ */
+function isNumericArrayLike(value) {
+  return Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView));
+}
+
+/**
+ * Creates a segment view/copy from an array-like numeric input.
+ * @param {ArrayLike<number> & { subarray?: Function }} x - The input signal
+ * @param {number} start - Start index
+ * @param {number} end - End index
+ * @returns {ArrayLike<number>} Segment data
+ */
+function sliceNumericArrayLike(x, start, end) {
+  if (Array.isArray(x)) {
+    return x.slice(start, end);
+  }
+
+  return x.subarray(start, end);
+}
+
+/**
+ * Sums numeric values in an array-like input.
+ * @param {ArrayLike<number>} values - Values to sum
+ * @returns {number} Sum of all entries
+ */
+function sumArrayLike(values) {
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+  }
+  return sum;
+}
+
+/**
+ * Sums squared numeric values in an array-like input.
+ * @param {ArrayLike<number>} values - Values to sum
+ * @returns {number} Sum of squared entries
+ */
+function sumSquaresArrayLike(values) {
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i] * values[i];
+  }
+  return sum;
+}
+
+/**
  * Checks if a number is a power of 2.
  * @param {number} n - The number to check
  * @returns {boolean} True if n is a power of 2
@@ -40,29 +90,35 @@ function hannWindow(length) {
 
 /**
  * Removes the mean (DC component) from a signal segment.
- * @param {number[]} segment - The signal segment
+ * @param {ArrayLike<number>} segment - The signal segment
  * @returns {number[]} The detrended segment
  */
 function detrendConstant(segment) {
-  const mean = segment.reduce((sum, val) => sum + val, 0) / segment.length;
-  return segment.map(val => val - mean);
+  const mean = sumArrayLike(segment) / segment.length;
+  const detrended = new Array(segment.length);
+
+  for (let i = 0; i < segment.length; i++) {
+    detrended[i] = segment[i] - mean;
+  }
+
+  return detrended;
 }
 
 
 
 /**
  * Extracts overlapping segments from a signal.
- * @param {number[]} x - The input signal
+ * @param {ArrayLike<number> & { subarray?: Function }} x - The input signal
  * @param {number} nperseg - Length of each segment
  * @param {number} noverlap - Number of points to overlap between segments
- * @returns {number[][]} Array of signal segments
+ * @returns {Array<ArrayLike<number>>} Array of signal segments
  */
 function extractSegments(x, nperseg, noverlap) {
   const step = nperseg - noverlap;
   const segments = [];
 
   for (let i = 0; i <= x.length - nperseg; i += step) {
-    segments.push(x.slice(i, i + nperseg));
+    segments.push(sliceNumericArrayLike(x, i, i + nperseg));
   }
 
   return segments;
@@ -112,10 +168,10 @@ function getFrequencies(nfft, fs) {
  * overlapping segments, computing a modified periodogram for each segment, and
  * averaging the periodograms.
  *
- * @param {number[]} x - The input signal (real-valued)
+ * @param {ArrayLike<number>} x - The input signal (real-valued)
  * @param {Object} options - Configuration options
  * @param {number} [options.fs=1.0] - Sampling frequency
- * @param {string|number[]} [options.window='hann'] - Window type ('hann') or custom window array
+ * @param {string|ArrayLike<number>} [options.window='hann'] - Window type ('hann') or custom window array
  * @param {number} [options.nperseg=256] - Length of each segment (must be power of 2)
  * @param {number|null} [options.noverlap=null] - Number of points to overlap (default: nperseg/2)
  * @param {number|null} [options.nfft=null] - FFT length (default: nperseg, must be >= nperseg and power of 2)
@@ -139,8 +195,8 @@ export function welch(x, {
   scaling = 'density'
 } = {}) {
   // Validate inputs
-  if (!Array.isArray(x) || x.length === 0) {
-    throw new Error('Input signal x must be a non-empty array');
+  if (!isNumericArrayLike(x) || x.length === 0) {
+    throw new Error('Input signal x must be a non-empty array or typed array');
   }
 
   validatePowerOf2(nperseg);
@@ -176,13 +232,13 @@ export function welch(x, {
     } else {
       throw new Error(`Unsupported window type: ${window}. Use 'hann' or provide a custom window array.`);
     }
-  } else if (Array.isArray(window)) {
+  } else if (isNumericArrayLike(window)) {
     if (window.length !== nperseg) {
       throw new Error(`Custom window length (${window.length}) must match nperseg (${nperseg})`);
     }
     windowArray = window;
   } else {
-    throw new Error('window must be a string or array');
+    throw new Error('window must be a string, array, or typed array');
   }
 
   // Extract segments
@@ -198,8 +254,8 @@ export function welch(x, {
   const psdSum = new Array(numFreqs).fill(0);
 
   // Compute window normalization factors
-  const windowSumSquares = windowArray.reduce((sum, val) => sum + val * val, 0);
-  const windowSum = windowArray.reduce((sum, val) => sum + val, 0);
+  const windowSumSquares = sumSquaresArrayLike(windowArray);
+  const windowSum = sumArrayLike(windowArray);
 
   // Process each segment
   for (const segment of segments) {
@@ -279,10 +335,10 @@ export function welch(x, {
  * segments, computing a modified periodogram for each segment, and returning
  * the time-frequency representation.
  *
- * @param {number[]} x - The input signal (real-valued)
+ * @param {ArrayLike<number>} x - The input signal (real-valued)
  * @param {Object} options - Configuration options
  * @param {number} [options.fs=1.0] - Sampling frequency
- * @param {string|number[]} [options.window='hann'] - Window type ('hann') or custom window array
+ * @param {string|ArrayLike<number>} [options.window='hann'] - Window type ('hann') or custom window array
  * @param {number} [options.nperseg=256] - Length of each segment (must be power of 2)
  * @param {number|null} [options.noverlap=null] - Number of points to overlap (default: nperseg/8)
  * @param {number|null} [options.nfft=null] - FFT length (default: nperseg, must be >= nperseg and power of 2)
@@ -309,8 +365,8 @@ export function spectrogram(x, {
   mode = 'psd'
 } = {}) {
   // Validate inputs
-  if (!Array.isArray(x) || x.length === 0) {
-    throw new Error('Input signal x must be a non-empty array');
+  if (!isNumericArrayLike(x) || x.length === 0) {
+    throw new Error('Input signal x must be a non-empty array or typed array');
   }
 
   validatePowerOf2(nperseg);
@@ -350,13 +406,13 @@ export function spectrogram(x, {
     } else {
       throw new Error(`Unsupported window type: ${window}. Use 'hann' or provide a custom window array.`);
     }
-  } else if (Array.isArray(window)) {
+  } else if (isNumericArrayLike(window)) {
     if (window.length !== nperseg) {
       throw new Error(`Custom window length (${window.length}) must match nperseg (${nperseg})`);
     }
     windowArray = window;
   } else {
-    throw new Error('window must be a string or array');
+    throw new Error('window must be a string, array, or typed array');
   }
 
   // Extract segments
@@ -372,8 +428,8 @@ export function spectrogram(x, {
   const numTimes = segments.length;
 
   // Compute window normalization factors
-  const windowSumSquares = windowArray.reduce((sum, val) => sum + val * val, 0);
-  const windowSum = windowArray.reduce((sum, val) => sum + val, 0);
+  const windowSumSquares = sumSquaresArrayLike(windowArray);
+  const windowSum = sumArrayLike(windowArray);
 
   // Initialize spectrogram array [frequency][time]
   const spec = new Array(numFreqs);

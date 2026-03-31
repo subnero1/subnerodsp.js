@@ -2,6 +2,8 @@
 
 This module provides digital signal processing functions for computing power spectral density (PSD) and spectrograms of real-valued signals, designed for web-based audio analysis and visualization.
 
+The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays.
+
 ## Features
 
 - **Welch's Method** - Robust power spectral density estimation with overlapping segments
@@ -25,10 +27,10 @@ The module requires `fft.js` for FFT computation.
 Computes the Power Spectral Density using Welch's method.
 
 **Parameters:**
-- `x` (number[]): Input signal (real-valued)
+- `x` (number[] | TypedArray): Input signal (real-valued)
 - `options` (Object):
   - `fs` (number, default: 1.0): Sampling frequency in Hz
-  - `window` (string | number[], default: 'hann'): Window type or custom window array
+  - `window` (string | number[] | TypedArray, default: 'hann'): Window type or custom window array
   - `nperseg` (number, default: 256): Segment length (must be power of 2)
   - `noverlap` (number, default: nperseg/2): Number of overlapping points
   - `nfft` (number, default: nperseg): FFT length (must be power of 2, >= nperseg)
@@ -41,7 +43,7 @@ Computes the Power Spectral Density using Welch's method.
 ```javascript
 import { welch } from './src/dsp.js';
 
-const signal = [...]; // Your audio signal
+const signal = Float32Array.from([...]); // Your audio signal
 const result = welch(signal, {
   fs: 44100,      // 44.1 kHz sample rate
   nperseg: 2048,  // 2048-point segments
@@ -57,10 +59,10 @@ console.log(result.psd);         // Power spectral density
 Computes the spectrogram using short-time Fourier transform.
 
 **Parameters:**
-- `x` (number[]): Input signal (real-valued)
+- `x` (number[] | TypedArray): Input signal (real-valued)
 - `options` (Object):
   - `fs` (number, default: 1.0): Sampling frequency in Hz
-  - `window` (string | number[], default: 'hann'): Window type or custom window array
+  - `window` (string | number[] | TypedArray, default: 'hann'): Window type or custom window array
   - `nperseg` (number, default: 256): Segment length (must be power of 2)
   - `noverlap` (number, default: nperseg/8): Number of overlapping points
   - `nfft` (number, default: nperseg): FFT length (must be power of 2, >= nperseg)
@@ -76,7 +78,7 @@ The `spectrogram` is a 2D array where `spectrogram[f][t]` is the value at freque
 ```javascript
 import { spectrogram } from './src/dsp.js';
 
-const signal = [...]; // Your audio signal
+const signal = Float32Array.from([...]); // Your audio signal
 const result = spectrogram(signal, {
   fs: 44100,       // 44.1 kHz sample rate
   nperseg: 1024,   // 1024-point segments
@@ -153,6 +155,8 @@ const result = welch(signal, {
   nperseg
 });
 ```
+
+Typed-array inputs are consumed directly. When the source signal is a typed array, overlapping segments are taken as typed-array views rather than copying the entire input into a plain array first.
 
 ## Important Notes
 
