@@ -1,8 +1,30 @@
-import { assertEquals, assertThrows, assertAlmostEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
 import { welch, spectrogram, SpectrogramStream } from "./dsp.js";
 
 function makeSineSignal(length, fs = 1000, frequency = 10) {
   return new Array(length).fill(0).map((_, i) => Math.sin(2 * Math.PI * frequency * i / fs));
+}
+
+function assertEquals(actual, expected, message) {
+  assert.deepEqual(actual, expected, message);
+}
+
+function assertThrows(fn, errorType, messagePart) {
+  assert.throws(fn, (error) => {
+    assert.ok(error instanceof errorType);
+    if (messagePart) {
+      assert.match(error.message, new RegExp(messagePart.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    return true;
+  });
+}
+
+function assertAlmostEquals(actual, expected, tolerance = 1e-10, message) {
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    message ?? `Expected ${actual} to be within ${tolerance} of ${expected}`
+  );
 }
 
 function assertArrayAlmostEquals(actual, expected, tolerance = 1e-10) {
@@ -22,7 +44,7 @@ function assertMatrixAlmostEquals(actual, expected, tolerance = 1e-10) {
 /**
  * Test power-of-2 validation for welch function.
  */
-Deno.test("welch throws error for non-power-of-2 nperseg", () => {
+test("welch throws error for non-power-of-2 nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -47,7 +69,7 @@ Deno.test("welch throws error for non-power-of-2 nperseg", () => {
 /**
  * Test power-of-2 validation for spectrogram function.
  */
-Deno.test("spectrogram throws error for non-power-of-2 nperseg", () => {
+test("spectrogram throws error for non-power-of-2 nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -60,7 +82,7 @@ Deno.test("spectrogram throws error for non-power-of-2 nperseg", () => {
 /**
  * Test power-of-2 validation for nfft parameter.
  */
-Deno.test("welch throws error for non-power-of-2 nfft", () => {
+test("welch throws error for non-power-of-2 nfft", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -73,7 +95,7 @@ Deno.test("welch throws error for non-power-of-2 nfft", () => {
 /**
  * Test welch with default parameters.
  */
-Deno.test("welch works with default parameters", () => {
+test("welch works with default parameters", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal);
@@ -90,7 +112,7 @@ Deno.test("welch works with default parameters", () => {
 /**
  * Test welch with custom nperseg.
  */
-Deno.test("welch works with custom nperseg", () => {
+test("welch works with custom nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal, { nperseg: 512 });
@@ -102,7 +124,7 @@ Deno.test("welch works with custom nperseg", () => {
 /**
  * Test welch frequency bins are correct.
  */
-Deno.test("welch generates correct frequency bins", () => {
+test("welch generates correct frequency bins", () => {
   const fs = 1000; // 1 kHz sampling rate
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / fs));
 
@@ -122,7 +144,7 @@ Deno.test("welch generates correct frequency bins", () => {
 /**
  * Test welch with custom window array.
  */
-Deno.test("welch accepts custom window array", () => {
+test("welch accepts custom window array", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   // Create a rectangular window (all ones)
@@ -137,7 +159,7 @@ Deno.test("welch accepts custom window array", () => {
 /**
  * Test welch throws error for mismatched custom window length.
  */
-Deno.test("welch throws error for mismatched custom window length", () => {
+test("welch throws error for mismatched custom window length", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const customWindow = new Array(128).fill(1);
@@ -152,7 +174,7 @@ Deno.test("welch throws error for mismatched custom window length", () => {
 /**
  * Test welch with noverlap parameter.
  */
-Deno.test("welch works with custom noverlap", () => {
+test("welch works with custom noverlap", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal, { nperseg: 256, noverlap: 128 });
@@ -164,7 +186,7 @@ Deno.test("welch works with custom noverlap", () => {
 /**
  * Test welch throws error for invalid noverlap.
  */
-Deno.test("welch throws error for noverlap >= nperseg", () => {
+test("welch throws error for noverlap >= nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -177,7 +199,7 @@ Deno.test("welch throws error for noverlap >= nperseg", () => {
 /**
  * Test welch with nfft > nperseg (zero-padding).
  */
-Deno.test("welch works with nfft > nperseg", () => {
+test("welch works with nfft > nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal, { nperseg: 256, nfft: 512 });
@@ -189,7 +211,7 @@ Deno.test("welch works with nfft > nperseg", () => {
 /**
  * Test welch throws error for nfft < nperseg.
  */
-Deno.test("welch throws error for nfft < nperseg", () => {
+test("welch throws error for nfft < nperseg", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -202,7 +224,7 @@ Deno.test("welch throws error for nfft < nperseg", () => {
 /**
  * Test welch with scaling='spectrum'.
  */
-Deno.test("welch works with scaling='spectrum'", () => {
+test("welch works with scaling='spectrum'", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal, { scaling: 'spectrum' });
@@ -214,7 +236,7 @@ Deno.test("welch works with scaling='spectrum'", () => {
 /**
  * Test welch with detrend=false.
  */
-Deno.test("welch works with detrend=false", () => {
+test("welch works with detrend=false", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = welch(signal, { detrend: false });
@@ -226,7 +248,7 @@ Deno.test("welch works with detrend=false", () => {
 /**
  * Test welch throws error for empty signal.
  */
-Deno.test("welch throws error for empty signal", () => {
+test("welch throws error for empty signal", () => {
   assertThrows(
     () => welch([]),
     Error,
@@ -237,7 +259,7 @@ Deno.test("welch throws error for empty signal", () => {
 /**
  * Test welch accepts Float32Array input.
  */
-Deno.test("welch accepts Float32Array input", () => {
+test("welch accepts Float32Array input", () => {
   const signal = Float32Array.from(makeSineSignal(1000));
 
   const result = welch(signal, { nperseg: 256 });
@@ -249,7 +271,7 @@ Deno.test("welch accepts Float32Array input", () => {
 /**
  * Test welch accepts Float64Array input.
  */
-Deno.test("welch accepts Float64Array input", () => {
+test("welch accepts Float64Array input", () => {
   const signal = Float64Array.from(makeSineSignal(1000));
 
   const result = welch(signal, { nperseg: 256 });
@@ -261,7 +283,7 @@ Deno.test("welch accepts Float64Array input", () => {
 /**
  * Test welch returns the same result for Array and Float32Array input.
  */
-Deno.test("welch matches Array and Float32Array input", () => {
+test("welch matches Array and Float32Array input", () => {
   const signal = makeSineSignal(2048, 1000, 100);
   const float32Signal = Float32Array.from(signal);
 
@@ -275,7 +297,7 @@ Deno.test("welch matches Array and Float32Array input", () => {
 /**
  * Test welch throws error for signal shorter than nperseg.
  */
-Deno.test("welch throws error for signal shorter than nperseg", () => {
+test("welch throws error for signal shorter than nperseg", () => {
   const signal = new Array(100).fill(0);
 
   assertThrows(
@@ -288,7 +310,7 @@ Deno.test("welch throws error for signal shorter than nperseg", () => {
 /**
  * Test spectrogram with default parameters.
  */
-Deno.test("spectrogram works with default parameters", () => {
+test("spectrogram works with default parameters", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = spectrogram(signal);
@@ -311,7 +333,7 @@ Deno.test("spectrogram works with default parameters", () => {
 /**
  * Test spectrogram output shape.
  */
-Deno.test("spectrogram has correct output shape", () => {
+test("spectrogram has correct output shape", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = spectrogram(signal, { nperseg: 256, noverlap: 32 });
@@ -332,7 +354,7 @@ Deno.test("spectrogram has correct output shape", () => {
 /**
  * Test spectrogram with mode='magnitude'.
  */
-Deno.test("spectrogram works with mode='magnitude'", () => {
+test("spectrogram works with mode='magnitude'", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const result = spectrogram(signal, { mode: 'magnitude' });
@@ -345,7 +367,7 @@ Deno.test("spectrogram works with mode='magnitude'", () => {
 /**
  * Test spectrogram throws error for unsupported mode.
  */
-Deno.test("spectrogram throws error for unsupported mode", () => {
+test("spectrogram throws error for unsupported mode", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   assertThrows(
@@ -358,7 +380,7 @@ Deno.test("spectrogram throws error for unsupported mode", () => {
 /**
  * Test spectrogram time bins are correct.
  */
-Deno.test("spectrogram generates correct time bins", () => {
+test("spectrogram generates correct time bins", () => {
   const fs = 1000; // 1 kHz sampling rate
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / fs));
 
@@ -382,7 +404,7 @@ Deno.test("spectrogram generates correct time bins", () => {
 /**
  * Test spectrogram with custom window array.
  */
-Deno.test("spectrogram accepts custom window array", () => {
+test("spectrogram accepts custom window array", () => {
   const signal = new Array(1000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   // Create a rectangular window (all ones)
@@ -397,7 +419,7 @@ Deno.test("spectrogram accepts custom window array", () => {
 /**
  * Test spectrogram default noverlap is nperseg/8.
  */
-Deno.test("spectrogram uses nperseg/8 as default noverlap", () => {
+test("spectrogram uses nperseg/8 as default noverlap", () => {
   const signal = new Array(2000).fill(0).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 1000));
 
   const nperseg = 256;
@@ -411,7 +433,7 @@ Deno.test("spectrogram uses nperseg/8 as default noverlap", () => {
 /**
  * Test spectrogram accepts Float32Array input.
  */
-Deno.test("spectrogram accepts Float32Array input", () => {
+test("spectrogram accepts Float32Array input", () => {
   const signal = Float32Array.from(makeSineSignal(1000));
 
   const result = spectrogram(signal, { nperseg: 256, mode: 'magnitude' });
@@ -423,7 +445,7 @@ Deno.test("spectrogram accepts Float32Array input", () => {
 /**
  * Test spectrogram accepts Float64Array input.
  */
-Deno.test("spectrogram accepts Float64Array input", () => {
+test("spectrogram accepts Float64Array input", () => {
   const signal = Float64Array.from(makeSineSignal(1000));
 
   const result = spectrogram(signal, { nperseg: 256, mode: 'psd' });
@@ -435,7 +457,7 @@ Deno.test("spectrogram accepts Float64Array input", () => {
 /**
  * Test spectrogram returns the same result for Array and Float32Array input.
  */
-Deno.test("spectrogram matches Array and Float32Array input", () => {
+test("spectrogram matches Array and Float32Array input", () => {
   const signal = makeSineSignal(2048, 1000, 100);
   const float32Signal = Float32Array.from(signal);
 
@@ -450,7 +472,7 @@ Deno.test("spectrogram matches Array and Float32Array input", () => {
 /**
  * Test welch detects peak frequency for sinusoidal signal.
  */
-Deno.test("welch detects peak frequency for sinusoidal signal", () => {
+test("welch detects peak frequency for sinusoidal signal", () => {
   const fs = 1000; // 1 kHz sampling rate
   const f0 = 100; // 100 Hz signal
   const signal = new Array(4096).fill(0).map((_, i) => Math.sin(2 * Math.PI * f0 * i / fs));
@@ -479,7 +501,7 @@ Deno.test("welch detects peak frequency for sinusoidal signal", () => {
 /**
  * Test spectrogram detects consistent frequency for constant sinusoid.
  */
-Deno.test("spectrogram detects consistent frequency for constant sinusoid", () => {
+test("spectrogram detects consistent frequency for constant sinusoid", () => {
   const fs = 1000; // 1 kHz sampling rate
   const f0 = 100; // 100 Hz signal
   const signal = new Array(4096).fill(0).map((_, i) => Math.sin(2 * Math.PI * f0 * i / fs));
@@ -511,7 +533,7 @@ Deno.test("spectrogram detects consistent frequency for constant sinusoid", () =
 /**
  * Test SpectrogramStream enforces exact hop-sized chunks.
  */
-Deno.test("SpectrogramStream enforces exact chunkSize input", () => {
+test("SpectrogramStream enforces exact chunkSize input", () => {
   const stream = new SpectrogramStream({ nperseg: 256, noverlap: 64 });
 
   assertEquals(stream.chunkSize, 192);
@@ -527,7 +549,7 @@ Deno.test("SpectrogramStream enforces exact chunkSize input", () => {
 /**
  * Test SpectrogramStream first frame timing and output shape.
  */
-Deno.test("SpectrogramStream returns one column with expected time center", () => {
+test("SpectrogramStream returns one column with expected time center", () => {
   const fs = 1000;
   const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 32, mode: 'magnitude' });
   const chunk = makeSineSignal(stream.chunkSize, fs, 100);
@@ -542,7 +564,7 @@ Deno.test("SpectrogramStream returns one column with expected time center", () =
 /**
  * Test SpectrogramStream accepts typed-array chunks.
  */
-Deno.test("SpectrogramStream accepts Float32Array chunks", () => {
+test("SpectrogramStream accepts Float32Array chunks", () => {
   const stream = new SpectrogramStream({ nperseg: 256, mode: 'magnitude' });
   const chunk = Float32Array.from(makeSineSignal(stream.chunkSize));
 
@@ -555,7 +577,7 @@ Deno.test("SpectrogramStream accepts Float32Array chunks", () => {
 /**
  * Test SpectrogramStream reset clears overlap and time state.
  */
-Deno.test("SpectrogramStream reset restores initial state", () => {
+test("SpectrogramStream reset restores initial state", () => {
   const fs = 1000;
   const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 128, mode: 'magnitude' });
   const firstChunk = makeSineSignal(stream.chunkSize, fs, 100);
@@ -575,7 +597,7 @@ Deno.test("SpectrogramStream reset restores initial state", () => {
 /**
  * Test SpectrogramStream matches batch spectrogram with zero-prefill framing.
  */
-Deno.test("SpectrogramStream matches batch spectrogram with zero-prefill", () => {
+test("SpectrogramStream matches batch spectrogram with zero-prefill", () => {
   const fs = 1000;
   const nperseg = 256;
   const noverlap = 128;

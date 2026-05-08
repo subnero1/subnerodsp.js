@@ -1,7 +1,7 @@
 /**
  * Demo script showing how to use the DSP functions (welch and spectrogram).
  *
- * Run with: deno run examples/dsp_demo.js
+ * Run with: node examples/dsp_demo.js
  */
 
 import { welch, spectrogram } from "../src/dsp.js";

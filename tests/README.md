@@ -6,7 +6,8 @@ This directory contains validation tests that compare the JavaScript DSP impleme
 
 - `generate_scipy_reference.py` - Python script that generates reference data using SciPy
 - `scipy_reference_data.json` - Reference data file (generated, not in git)
-- `scipy_validation_test.js` - Deno test suite that validates JS implementation against reference
+- `scipy_validation_test.js` - Node.js test suite that validates JS implementation against reference
+- `scipy_validation_test.js` - Node.js test suite that validates JS implementation against reference
 - `debug_*.py` / `debug_*.js` - Debug scripts for troubleshooting
 
 ## Running Validation Tests
@@ -35,21 +36,19 @@ This creates `scipy_reference_data.json` containing:
 
 ### Run Validation Tests
 
-Run the Deno tests to validate the JavaScript implementation:
+Run the Node.js tests to validate the JavaScript implementation:
 
 ```bash
-cd ..
-deno test --allow-read tests/scipy_validation_test.js
+pnpm test:scipy
 ```
 
 Expected output:
 ```
 ✓ Loaded SciPy reference data
-running 17 tests from ./tests/scipy_validation_test.js
-Welch: sine_100hz - default parameters ... ok (2ms)
-Welch: two_tone - default parameters ... ok (0ms)
+▶ Welch: sine_100hz - default parameters
+   ✔ Welch: sine_100hz - default parameters
 ...
-ok | 17 passed | 0 failed (11ms)
+✔ 17 tests passing
 ```
 
 ## Test Coverage
@@ -115,7 +114,7 @@ python tests/debug_window.py
 python tests/debug_magnitude.py
 
 # Check JavaScript implementation
-deno run tests/debug_js.js
+node tests/debug_js.js
 ```
 
 ## Regenerating Reference Data

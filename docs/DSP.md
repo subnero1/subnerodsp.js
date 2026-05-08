@@ -16,7 +16,7 @@ The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Fl
 ## Installation
 
 ```bash
-npm install
+pnpm install
 ```
 
 The module requires `fft.js` for FFT computation.
@@ -251,13 +251,13 @@ This strict contract keeps the API deterministic: one chunk in, one column out.
 Run the test suite:
 
 ```bash
-deno test src/dsp_test.js
+pnpm test:dsp
 ```
 
 Run the demo:
 
 ```bash
-deno run examples/dsp_demo.js
+pnpm demo:dsp
 ```
 
 ## Implementation Details
