@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows, assertAlmostEquals } from "jsr:@std/assert";
-import { welch, spectrogram } from "./dsp.js";
+import { welch, spectrogram, SpectrogramStream } from "./dsp.js";
 
 function makeSineSignal(length, fs = 1000, frequency = 10) {
   return new Array(length).fill(0).map((_, i) => Math.sin(2 * Math.PI * frequency * i / fs));
@@ -505,5 +505,93 @@ Deno.test("spectrogram detects consistent frequency for constant sinusoid", () =
   for (const peakFreq of peakFreqs) {
     assertEquals(Math.abs(peakFreq - f0) < tolerance, true,
       `Peak frequency ${peakFreq} should be close to ${f0} Hz`);
+  }
+});
+
+/**
+ * Test SpectrogramStream enforces exact hop-sized chunks.
+ */
+Deno.test("SpectrogramStream enforces exact chunkSize input", () => {
+  const stream = new SpectrogramStream({ nperseg: 256, noverlap: 64 });
+
+  assertEquals(stream.chunkSize, 192);
+  assertEquals(stream.frequencies.length, 129);
+
+  assertThrows(
+    () => stream.process(new Array(191).fill(0)),
+    Error,
+    "Input chunk length (191) must equal chunkSize (192)"
+  );
+});
+
+/**
+ * Test SpectrogramStream first frame timing and output shape.
+ */
+Deno.test("SpectrogramStream returns one column with expected time center", () => {
+  const fs = 1000;
+  const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 32, mode: 'magnitude' });
+  const chunk = makeSineSignal(stream.chunkSize, fs, 100);
+
+  const result = stream.process(chunk);
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.spectrogram.length, 129);
+  assertAlmostEquals(result.time, (256 / 2) / fs, 1e-12);
+});
+
+/**
+ * Test SpectrogramStream accepts typed-array chunks.
+ */
+Deno.test("SpectrogramStream accepts Float32Array chunks", () => {
+  const stream = new SpectrogramStream({ nperseg: 256, mode: 'magnitude' });
+  const chunk = Float32Array.from(makeSineSignal(stream.chunkSize));
+
+  const result = stream.process(chunk);
+
+  assertEquals(result.frequencies.length, 129);
+  assertEquals(result.spectrogram.length, 129);
+});
+
+/**
+ * Test SpectrogramStream reset clears overlap and time state.
+ */
+Deno.test("SpectrogramStream reset restores initial state", () => {
+  const fs = 1000;
+  const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 128, mode: 'magnitude' });
+  const firstChunk = makeSineSignal(stream.chunkSize, fs, 100);
+  const secondChunk = makeSineSignal(stream.chunkSize, fs, 100).map((value, index) =>
+    Math.sin(2 * Math.PI * 100 * (index + stream.chunkSize) / fs)
+  );
+
+  const firstResult = stream.process(firstChunk);
+  stream.process(secondChunk);
+  stream.reset();
+  const resetResult = stream.process(firstChunk);
+
+  assertAlmostEquals(resetResult.time, firstResult.time, 1e-12);
+  assertArrayAlmostEquals(resetResult.spectrogram, firstResult.spectrogram, 1e-10);
+});
+
+/**
+ * Test SpectrogramStream matches batch spectrogram with zero-prefill framing.
+ */
+Deno.test("SpectrogramStream matches batch spectrogram with zero-prefill", () => {
+  const fs = 1000;
+  const nperseg = 256;
+  const noverlap = 128;
+  const signal = makeSineSignal(1024, fs, 100);
+  const paddedSignal = new Array(noverlap).fill(0).concat(signal);
+  const batchResult = spectrogram(paddedSignal, { fs, nperseg, noverlap, mode: 'magnitude' });
+  const stream = new SpectrogramStream({ fs, nperseg, noverlap, mode: 'magnitude' });
+
+  for (let timeIndex = 0; timeIndex < signal.length / stream.chunkSize; timeIndex++) {
+    const chunkStart = timeIndex * stream.chunkSize;
+    const chunk = signal.slice(chunkStart, chunkStart + stream.chunkSize);
+    const streamResult = stream.process(chunk);
+    const expectedColumn = batchResult.spectrogram.map((row) => row[timeIndex]);
+
+    assertArrayAlmostEquals(streamResult.frequencies, batchResult.frequencies, 1e-12);
+    assertAlmostEquals(streamResult.time, batchResult.times[timeIndex], 1e-12);
+    assertArrayAlmostEquals(streamResult.spectrogram, expectedColumn, 1e-6);
   }
 });

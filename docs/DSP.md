@@ -8,6 +8,7 @@ The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Fl
 
 - **Welch's Method** - Robust power spectral density estimation with overlapping segments
 - **Spectrogram** - Time-frequency analysis using short-time Fourier transform (STFT)
+- **Streaming Spectrogram** - One spectrogram column per fixed-size input chunk
 - **Built on fft.js** - Fast FFT implementation optimized for JavaScript
 - **Simple API** - Inspired by scipy.signal for ease of use
 - **Custom Windows** - Support for built-in and user-defined window functions
@@ -91,6 +92,42 @@ console.log(result.times);        // Time bins [t0, t1, t2, ...]
 console.log(result.spectrogram);  // 2D array [freq][time]
 ```
 
+### `new SpectrogramStream(options)`
+
+Computes a spectrogram one time slice at a time from streaming input.
+
+**Parameters:**
+- Same as `spectrogram(x, options)`
+
+**Properties:**
+- `chunkSize` (number): Required input length for each `process()` call, equal to `nperseg - noverlap`
+- `frequencies` (number[]): Cached one-sided frequency bins
+
+**Methods:**
+- `process(chunk)` → `{frequencies: number[], time: number, spectrogram: number[]}`
+- `reset()` → clears overlap history and restarts time indexing
+
+The first call to `process()` uses a zero-prefilled overlap buffer so one output column is returned immediately.
+
+**Example:**
+```javascript
+import { SpectrogramStream } from './src/dsp.js';
+
+const signal = Float32Array.from([...]);
+const stream = new SpectrogramStream({
+  fs: 44100,
+  nperseg: 1024,
+  noverlap: 512,
+  mode: 'magnitude'
+});
+
+for (let offset = 0; offset + stream.chunkSize <= signal.length; offset += stream.chunkSize) {
+  const chunk = signal.subarray(offset, offset + stream.chunkSize);
+  const result = stream.process(chunk);
+  console.log(result.time, result.spectrogram[0]);
+}
+```
+
 ## Usage Examples
 
 ### Basic PSD Estimation
@@ -137,6 +174,29 @@ const { frequencies, times, spectrogram: spec } = spectrogram(signal, {
 console.log(`Spectrogram size: ${frequencies.length} × ${times.length}`);
 ```
 
+### Streaming Time-Frequency Analysis
+
+```javascript
+import { SpectrogramStream } from './src/dsp.js';
+
+const fs = 1000;
+const stream = new SpectrogramStream({
+  fs,
+  nperseg: 256,
+  noverlap: 128,
+  mode: 'magnitude'
+});
+
+function handleIncomingChunk(chunk) {
+  if (chunk.length !== stream.chunkSize) {
+    throw new Error(`Expected ${stream.chunkSize} samples`);
+  }
+
+  const { time, spectrogram } = stream.process(chunk);
+  console.log(`Column at ${time.toFixed(3)} s has ${spectrogram.length} bins`);
+}
+```
+
 ### Custom Window Function
 
 ```javascript
@@ -173,6 +233,14 @@ The functions will throw an error if you provide non-power-of-2 values.
 - **Welch**: Default overlap is 50% (`noverlap = nperseg/2`), which is optimal for Hann window
 - **Spectrogram**: Default overlap is 12.5% (`noverlap = nperseg/8`), which maintains statistical independence between segments
 
+For `SpectrogramStream`, each call to `process(chunk)` must provide exactly one hop of new data:
+
+```javascript
+chunk.length === nperseg - noverlap
+```
+
+This strict contract keeps the API deterministic: one chunk in, one column out.
+
 ### Scaling Options
 
 - **'density'** (default): Returns power spectral density in V²/Hz units
@@ -198,6 +266,7 @@ deno run examples/dsp_demo.js
 - Returns one-sided spectrum for real-valued inputs (DC to Nyquist)
 - Applies proper normalization for both 'density' and 'spectrum' scaling
 - Supports detrending to remove DC offset before FFT
+- `SpectrogramStream` zero-prefills the initial overlap history so the first chunk immediately yields one column
 - Validates all inputs and provides descriptive error messages
 
 ## Limitations (Simplified from SciPy)
