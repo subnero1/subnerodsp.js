@@ -10,21 +10,6 @@ function isNumericArrayLike(value) {
 }
 
 /**
- * Creates a segment view/copy from an array-like numeric input.
- * @param {ArrayLike<number> & { subarray?: Function }} x - The input signal
- * @param {number} start - Start index
- * @param {number} end - End index
- * @returns {ArrayLike<number>} Segment data
- */
-function sliceNumericArrayLike(x, start, end) {
-  if (Array.isArray(x)) {
-    return x.slice(start, end);
-  }
-
-  return x.subarray(start, end);
-}
-
-/**
  * Sums numeric values in an array-like input.
  * @param {ArrayLike<number>} values - Values to sum
  * @returns {number} Sum of all entries
@@ -89,8 +74,8 @@ function validateScaling(scaling) {
  * @throws {Error} If mode is unsupported
  */
 function validateSpectrogramMode(mode) {
-  if (mode !== 'psd' && mode !== 'magnitude') {
-    throw new Error(`Unsupported mode: ${mode}. Use 'psd' or 'magnitude'.`);
+  if (mode !== 'psd' && mode !== 'magnitude' && mode !== 'db') {
+    throw new Error(`Unsupported mode: ${mode}. Use 'psd', 'magnitude' or 'db'.`);
   }
 }
 
@@ -98,71 +83,16 @@ function validateSpectrogramMode(mode) {
  * Generates a Hann window of the specified length.
  * Uses periodic version (matches SciPy's default for spectral estimation).
  * @param {number} length - The length of the window
- * @returns {number[]} The Hann window array
+ * @returns {Float64Array} The Hann window
  */
 function hannWindow(length) {
-  const window = new Array(length);
+  const window = new Float64Array(length);
   for (let n = 0; n < length; n++) {
     // Periodic window: 0.5 - 0.5 * cos(2*pi*n / N)
     // This matches scipy's default for spectral estimation
     window[n] = 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / length);
   }
   return window;
-}
-
-/**
- * Removes the mean (DC component) from a signal segment.
- * @param {ArrayLike<number>} segment - The signal segment
- * @returns {number[]} The detrended segment
- */
-function detrendConstant(segment) {
-  const mean = sumArrayLike(segment) / segment.length;
-  const detrended = new Array(segment.length);
-
-  for (let i = 0; i < segment.length; i++) {
-    detrended[i] = segment[i] - mean;
-  }
-
-  return detrended;
-}
-
-
-
-/**
- * Extracts overlapping segments from a signal.
- * @param {ArrayLike<number> & { subarray?: Function }} x - The input signal
- * @param {number} nperseg - Length of each segment
- * @param {number} noverlap - Number of points to overlap between segments
- * @returns {Array<ArrayLike<number>>} Array of signal segments
- */
-function extractSegments(x, nperseg, noverlap) {
-  const step = nperseg - noverlap;
-  const segments = [];
-
-  for (let i = 0; i <= x.length - nperseg; i += step) {
-    segments.push(sliceNumericArrayLike(x, i, i + nperseg));
-  }
-
-  return segments;
-}
-
-/**
- * Computes the magnitude spectrum from FFT output.
- * @param {number[]} complexArray - FFT output in complex format [real0, imag0, real1, imag1, ...]
- * @param {number} nfft - The FFT size
- * @returns {number[]} Array of magnitudes (one-sided for real input)
- */
-function getMagnitudeSpectrum(complexArray, nfft) {
-  const numFreqs = Math.floor(nfft / 2) + 1; // One-sided spectrum
-  const magnitudes = new Array(numFreqs);
-
-  for (let i = 0; i < numFreqs; i++) {
-    const real = complexArray[i * 2];
-    const imag = complexArray[i * 2 + 1];
-    magnitudes[i] = Math.sqrt(real * real + imag * imag);
-  }
-
-  return magnitudes;
 }
 
 /**
@@ -187,7 +117,7 @@ function getFrequencies(nfft, fs) {
  * Resolves a built-in or custom window specification.
  * @param {string|ArrayLike<number>} window - Window type or samples
  * @param {number} nperseg - Segment length
- * @returns {ArrayLike<number>} Window samples
+ * @returns {Float64Array} Window samples
  */
 function resolveWindow(window, nperseg) {
   if (typeof window === 'string') {
@@ -203,26 +133,30 @@ function resolveWindow(window, nperseg) {
       throw new Error(`Custom window length (${window.length}) must match nperseg (${nperseg})`);
     }
 
-    return window;
+    return Float64Array.from(window);
   }
 
   throw new Error('window must be a string, array, or typed array');
 }
 
 /**
- * Builds validated shared state for spectrogram computations.
- * @param {Object} options - Spectrogram options
+ * Builds validated, reusable state for spectral computations.
+ *
+ * The returned state owns every work buffer the transform needs, so repeated
+ * calls through {@link magSqInto} allocate nothing.
+ *
+ * @param {Object} options - Spectral options
  * @param {number} [options.fs=1.0] - Sampling frequency
  * @param {string|ArrayLike<number>} [options.window='hann'] - Window type or samples
  * @param {number} [options.nperseg=256] - Segment length
- * @param {number|null} [options.noverlap=null] - Overlap length
+ * @param {number|null} [options.noverlap=null] - Overlap length (default nperseg/8)
  * @param {number|null} [options.nfft=null] - FFT length
  * @param {string|boolean} [options.detrend='constant'] - Detrend mode
  * @param {string} [options.scaling='density'] - Spectral scaling
  * @param {string} [options.mode='psd'] - Output mode
- * @returns {Object} Validated configuration and cached state
+ * @returns {Object} Validated configuration and cached work buffers
  */
-function createSpectrogramState({
+function createDspState({
   fs = 1.0,
   window = 'hann',
   nperseg = 256,
@@ -254,10 +188,9 @@ function createSpectrogramState({
     throw new Error(`noverlap (${noverlap}) must be < nperseg (${nperseg})`);
   }
 
-  const step = nperseg - noverlap;
   const windowArray = resolveWindow(window, nperseg);
-  const windowSumSquares = sumSquaresArrayLike(windowArray);
-  const windowSum = sumArrayLike(windowArray);
+  const fft = new FFT(nfft);
+  const numFreqs = Math.floor(nfft / 2) + 1;
 
   return {
     fs,
@@ -268,78 +201,118 @@ function createSpectrogramState({
     detrend,
     scaling,
     mode,
-    step,
-    fft: new FFT(nfft),
-    numFreqs: Math.floor(nfft / 2) + 1,
+    step: nperseg - noverlap,
+    fft,
+    numFreqs,
     frequencies: getFrequencies(nfft, fs),
-    windowSumSquares,
-    windowSum
+    windowSumSquares: sumSquaresArrayLike(windowArray),
+    windowSum: sumArrayLike(windowArray),
+    // Work buffers, reused across calls. The [nperseg, nfft) tail of fftInput
+    // stays zero (zero-padding) because only [0, nperseg) is ever written.
+    fftInput: new Float64Array(nfft),
+    fftOutput: fft.createComplexArray(),
+    magSq: new Float64Array(numFreqs),
+    magSqSum: new Float64Array(numFreqs)
   };
 }
 
 /**
- * Computes a single spectrogram column from one time-domain segment.
- * @param {ArrayLike<number>} segment - Segment samples
- * @param {Object} state - Shared spectrogram state
- * @returns {number[]} One spectrogram column across frequencies
+ * Transforms one segment and writes its one-sided magnitude-squared spectrum
+ * into `state.magSq`. Allocation-free.
+ *
+ * @param {Object} state - State from createDspState()
+ * @param {ArrayLike<number>} x - Input signal
+ * @param {number} offset - Index of the segment's first sample in x
  */
-function computeSpectrogramColumn(segment, state) {
-  let processedSegment = segment;
+function magSqInto(state, x, offset) {
+  const { nperseg, numFreqs, windowArray, fftInput, fftOutput, magSq } = state;
+
+  let mean = 0;
   if (state.detrend === 'constant') {
-    processedSegment = detrendConstant(segment);
+    let sum = 0;
+    for (let i = 0; i < nperseg; i++) {
+      sum += x[offset + i];
+    }
+    mean = sum / nperseg;
   }
 
-  const windowed = new Array(state.nperseg);
-  for (let i = 0; i < state.nperseg; i++) {
-    windowed[i] = processedSegment[i] * state.windowArray[i];
+  for (let i = 0; i < nperseg; i++) {
+    fftInput[i] = (x[offset + i] - mean) * windowArray[i];
   }
 
-  const fftInput = new Array(state.nfft).fill(0);
-  for (let i = 0; i < state.nperseg; i++) {
-    fftInput[i] = windowed[i];
-  }
-
-  const fftOutput = state.fft.createComplexArray();
   state.fft.realTransform(fftOutput, fftInput);
   state.fft.completeSpectrum(fftOutput);
 
-  const magnitudes = getMagnitudeSpectrum(fftOutput, state.nfft);
-  const column = new Array(state.numFreqs);
-
-  for (let i = 0; i < state.numFreqs; i++) {
-    if (state.mode === 'magnitude') {
-      const scale = Math.sqrt(state.windowSumSquares * state.fs);
-      column[i] = magnitudes[i] / scale;
-    } else {
-      let psdValue = magnitudes[i] * magnitudes[i];
-
-      if (state.scaling === 'density') {
-        psdValue = psdValue / (state.fs * state.windowSumSquares);
-      } else {
-        psdValue = psdValue / (state.windowSum * state.windowSum);
-      }
-
-      if (i > 0 && i < state.numFreqs - 1) {
-        psdValue *= 2;
-      }
-
-      column[i] = psdValue;
-    }
+  for (let i = 0; i < numFreqs; i++) {
+    const real = fftOutput[i * 2];
+    const imag = fftOutput[i * 2 + 1];
+    magSq[i] = real * real + imag * imag;
   }
-
-  return column;
 }
 
 /**
- * Stateful streaming spectrogram calculator.
+ * Converts one magnitude-squared spectrum to the configured output mode and
+ * writes it into `out` starting at `offset`. Allocation-free.
+ *
+ * @param {Object} state - State from createDspState()
+ * @param {ArrayLike<number>} magSq - Magnitude-squared spectrum (usually state.magSq)
+ * @param {number[]|Float32Array|Float64Array} out - Destination
+ * @param {number} [offset=0] - Destination offset
+ */
+function scaleInto(state, magSq, out, offset = 0) {
+  const { numFreqs, fs, windowSum, windowSumSquares } = state;
+
+  for (let i = 0; i < numFreqs; i++) {
+    let value;
+
+    if (state.mode === 'magnitude') {
+      value = Math.sqrt(magSq[i]) / Math.sqrt(windowSumSquares * fs);
+    } else if (state.mode === 'db') {
+      // Amplitude spectrum in dB. Equals the legacy display-dB conversion
+      // 20*log10(magnitudeMode * sqrt(windowSumSquares * fs) * 2 / windowSum).
+      value = 20 * Math.log10((Math.sqrt(magSq[i]) * 2) / windowSum + state.dbEps);
+    } else {
+      value = magSq[i];
+
+      if (state.scaling === 'density') {
+        value = value / (fs * windowSumSquares);
+      } else {
+        value = value / (windowSum * windowSum);
+      }
+
+      if (i > 0 && i < numFreqs - 1) {
+        value *= 2;
+      }
+    }
+
+    out[offset + i] = value;
+  }
+}
+
+/**
+ * Streaming short-time Fourier transform.
+ *
+ * Consumes exactly one hop of new samples per call and writes one spectral
+ * column into a caller-supplied array (typically a slot of a ring buffer).
+ * After construction it allocates nothing. The streaming counterpart of
+ * {@link spectrogram}, with the same `mode` choices.
  */
 export class SpectrogramStream {
   /**
-   * Creates a new streaming spectrogram.
-   * @param {Object} options - Spectrogram configuration, same as spectrogram()
+   * @param {Object} options - Configuration
+   * @param {number} [options.fs=1.0] - Sampling frequency
+   * @param {string|ArrayLike<number>} [options.window='hann'] - Window type or samples
+   * @param {number} [options.nperseg=256] - Segment (window) length, power of 2
+   * @param {number|null} [options.noverlap=null] - Overlap length (default nperseg/8)
+   * @param {number|null} [options.nfft=null] - FFT length (default nperseg)
+   * @param {string|boolean} [options.detrend='constant'] - Detrend type
+   * @param {string} [options.scaling='density'] - 'density' or 'spectrum' (mode 'psd' only)
+   * @param {string} [options.mode='db'] - 'db', 'magnitude' or 'psd'
+   * @param {number} [options.dbEps=1e-12] - Amplitude floor added before log (mode 'db')
    */
-  constructor(options = {}) {
-    const state = createSpectrogramState(options);
+  constructor({ mode = 'db', dbEps = 1e-12, ...options } = {}) {
+    const state = createDspState({ ...options, mode });
+    state.dbEps = dbEps;
 
     this.fs = state.fs;
     this.nperseg = state.nperseg;
@@ -348,59 +321,166 @@ export class SpectrogramStream {
     this.detrend = state.detrend;
     this.scaling = state.scaling;
     this.mode = state.mode;
-    this.chunkSize = state.step;
+    this.dbEps = dbEps;
+    this.hop = state.step;
+    this.numBins = state.numFreqs;
     this.frequencies = state.frequencies;
+    this.windowSum = state.windowSum;
+    this.windowSumSquares = state.windowSumSquares;
 
     this._state = state;
+    this._segment = new Float64Array(state.nperseg);
     this.reset();
   }
 
   /**
-   * Resets internal overlap and time state.
+   * Clears overlap history and the time origin.
    */
   reset() {
-    this._overlapBuffer = new Array(this.noverlap).fill(0);
-    this._segmentsProcessed = 0;
+    this._segment.fill(0);
+    this.hopsProcessed = 0;
   }
 
   /**
-   * Processes exactly one hop-sized chunk and returns one spectrogram column.
-   * @param {ArrayLike<number>} chunk - New input samples with length equal to chunkSize
-   * @returns {{frequencies: number[], time: number, spectrogram: number[]}} One time slice of the spectrogram
+   * Processes one hop of new samples and writes one column of `numBins` values.
+   *
+   * @param {ArrayLike<number>} chunk - Exactly `hop` new samples
+   * @param {number[]|Float32Array|Float64Array} out - Destination for the column
+   * @param {number} [offset=0] - Destination offset
+   * @returns {number} Time centre of this column, in seconds
    */
-  process(chunk) {
+  process(chunk, out, offset = 0) {
     if (!isNumericArrayLike(chunk) || chunk.length === 0) {
       throw new Error('Input chunk must be a non-empty array or typed array');
     }
 
-    if (chunk.length !== this.chunkSize) {
-      throw new Error(`Input chunk length (${chunk.length}) must equal chunkSize (${this.chunkSize})`);
+    if (chunk.length !== this.hop) {
+      throw new Error(`Input chunk length (${chunk.length}) must equal hop (${this.hop})`);
     }
 
-    const segment = new Array(this.nperseg);
-
-    for (let i = 0; i < this.noverlap; i++) {
-      segment[i] = this._overlapBuffer[i];
+    if (!out || out.length < offset + this.numBins) {
+      throw new Error(`Output must hold ${this.numBins} values at offset ${offset}`);
     }
 
-    for (let i = 0; i < this.chunkSize; i++) {
-      segment[this.noverlap + i] = chunk[i];
+    this._segment.copyWithin(0, this.hop);
+    this._segment.set(chunk, this.noverlap);
+
+    magSqInto(this._state, this._segment, 0);
+    scaleInto(this._state, this._state.magSq, out, offset);
+
+    const time = (this.hopsProcessed * this.hop + this.nperseg / 2) / this.fs;
+    this.hopsProcessed += 1;
+
+    return time;
+  }
+}
+
+/**
+ * Streaming Welch PSD estimator.
+ *
+ * Each call reads the tail of a caller-owned buffer (e.g. a ring buffer) and
+ * writes one spectral estimate into a caller-supplied array — no clamping,
+ * no accumulation between calls. After construction it allocates nothing.
+ * The streaming counterpart of {@link welch}, with the same `mode` choices
+ * as {@link SpectrogramStream}.
+ */
+export class WelchStream {
+  /**
+   * @param {Object} options - Configuration
+   * @param {number} [options.fs=1.0] - Sampling frequency
+   * @param {string|ArrayLike<number>} [options.window='hann'] - Window type or samples
+   * @param {number} [options.nperseg=1024] - Segment length, power of 2
+   * @param {number|null} [options.nfft=null] - FFT length (default nperseg)
+   * @param {number} [options.segments=8] - Number of 50%-overlapped segments to average
+   * @param {string|boolean} [options.detrend='constant'] - Detrend type
+   * @param {string} [options.scaling='density'] - 'density' or 'spectrum' (mode 'psd' only)
+   * @param {string} [options.mode='db'] - 'db', 'magnitude' or 'psd'
+   * @param {number} [options.dbEps=1e-20] - Power floor added before log (mode 'db')
+   */
+  constructor({ mode = 'db', dbEps = 1e-20, segments = 8, ...options } = {}) {
+    if (!Number.isInteger(segments) || segments < 1) {
+      throw new Error(`segments (${segments}) must be a positive integer`);
     }
 
-    const spectrogram = computeSpectrogramColumn(segment, this._state);
-    const time = (this._segmentsProcessed * this.chunkSize + this.nperseg / 2) / this.fs;
+    const noverlap = Math.floor((options.nperseg ?? 1024) / 2);
+    // dB is 10*log10(psd + dbEps): computed from the 'psd' path, then logged.
+    const state = createDspState({ nperseg: 1024, ...options, noverlap, mode: mode === 'db' ? 'psd' : mode });
+    state.dbEps = dbEps;
 
-    for (let i = 0; i < this.noverlap; i++) {
-      this._overlapBuffer[i] = segment[this.chunkSize + i];
+    this.fs = state.fs;
+    this.nperseg = state.nperseg;
+    this.noverlap = state.noverlap;
+    this.nfft = state.nfft;
+    this.detrend = state.detrend;
+    this.scaling = state.scaling;
+    this.mode = mode;
+    this.dbEps = dbEps;
+    this.segments = segments;
+    this.step = state.step;
+    this.needed = state.nperseg + (segments - 1) * state.step;
+    this.numBins = state.numFreqs;
+    this.frequencies = state.frequencies;
+    this.windowSum = state.windowSum;
+    this.windowSumSquares = state.windowSumSquares;
+
+    this._state = state;
+    this._scaled = new Float64Array(state.numFreqs);
+  }
+
+  /**
+   * Computes one PSD estimate from the tail of `samples` and writes it into `out`.
+   *
+   * @param {ArrayLike<number>} samples - Input signal; only the last `needed` samples are read
+   * @param {number[]|Float32Array|Float64Array} out - Destination for `numBins` values
+   * @param {number} [offset=0] - Destination offset
+   * @returns {number} Number of bins written (`numBins`)
+   */
+  process(samples, out, offset = 0) {
+    if (!isNumericArrayLike(samples) || samples.length === 0) {
+      throw new Error('Input signal must be a non-empty array or typed array');
     }
 
-    this._segmentsProcessed += 1;
+    if (samples.length < this.needed) {
+      throw new Error(
+        `Input length (${samples.length}) is too short for ${this.segments} segments of nperseg ${this.nperseg} (need ${this.needed})`
+      );
+    }
 
-    return {
-      frequencies: this.frequencies,
-      time,
-      spectrogram
-    };
+    if (!out || out.length < offset + this.numBins) {
+      throw new Error(`Output must hold ${this.numBins} values at offset ${offset}`);
+    }
+
+    const state = this._state;
+    const { numFreqs, magSq, magSqSum } = state;
+    const start = samples.length - this.needed;
+
+    magSqSum.fill(0);
+
+    for (let seg = 0; seg < this.segments; seg++) {
+      magSqInto(state, samples, start + seg * this.step);
+
+      for (let i = 0; i < numFreqs; i++) {
+        magSqSum[i] += magSq[i];
+      }
+    }
+
+    for (let i = 0; i < numFreqs; i++) {
+      magSqSum[i] /= this.segments;
+    }
+
+    scaleInto(state, magSqSum, this._scaled, 0);
+
+    if (this.mode === 'db') {
+      for (let i = 0; i < numFreqs; i++) {
+        out[offset + i] = 10 * Math.log10(this._scaled[i] + this.dbEps);
+      }
+    } else {
+      for (let i = 0; i < numFreqs; i++) {
+        out[offset + i] = this._scaled[i];
+      }
+    }
+
+    return numFreqs;
   }
 }
 
@@ -448,127 +528,37 @@ export function welch(x, {
     throw new Error(`nperseg (${nperseg}) cannot be greater than signal length (${x.length})`);
   }
 
-  // Set defaults
   if (noverlap === null) {
     noverlap = Math.floor(nperseg / 2);
   }
 
-  if (nfft === null) {
-    nfft = nperseg;
-  }
+  const state = createDspState({ fs, window, nperseg, noverlap, nfft, detrend, scaling });
+  const { numFreqs, magSq, magSqSum: psdSum, step } = state;
+  let numSegments = 0;
 
-  validatePowerOf2(nfft);
+  for (let offset = 0; offset <= x.length - nperseg; offset += step) {
+    magSqInto(state, x, offset);
 
-  if (nfft < nperseg) {
-    throw new Error(`nfft (${nfft}) must be >= nperseg (${nperseg})`);
-  }
-
-  if (noverlap >= nperseg) {
-    throw new Error(`noverlap (${noverlap}) must be < nperseg (${nperseg})`);
-  }
-
-  // Generate or validate window
-  let windowArray;
-  if (typeof window === 'string') {
-    if (window === 'hann') {
-      windowArray = hannWindow(nperseg);
-    } else {
-      throw new Error(`Unsupported window type: ${window}. Use 'hann' or provide a custom window array.`);
+    for (let i = 0; i < numFreqs; i++) {
+      psdSum[i] += magSq[i];
     }
-  } else if (isNumericArrayLike(window)) {
-    if (window.length !== nperseg) {
-      throw new Error(`Custom window length (${window.length}) must match nperseg (${nperseg})`);
-    }
-    windowArray = window;
-  } else {
-    throw new Error('window must be a string, array, or typed array');
+
+    numSegments += 1;
   }
 
-  // Extract segments
-  const segments = extractSegments(x, nperseg, noverlap);
-
-  if (segments.length === 0) {
+  if (numSegments === 0) {
     throw new Error('Not enough data for even one segment');
   }
 
-  // Initialize FFT
-  const fft = new FFT(nfft);
-  const numFreqs = Math.floor(nfft / 2) + 1;
-  const psdSum = new Array(numFreqs).fill(0);
-
-  // Compute window normalization factors
-  const windowSumSquares = sumSquaresArrayLike(windowArray);
-  const windowSum = sumArrayLike(windowArray);
-
-  // Process each segment
-  for (const segment of segments) {
-    // Detrend
-    let processedSegment = segment;
-    if (detrend === 'constant') {
-      processedSegment = detrendConstant(segment);
-    }
-
-    // Apply window
-    const windowed = new Array(nperseg);
-    for (let i = 0; i < nperseg; i++) {
-      windowed[i] = processedSegment[i] * windowArray[i];
-    }
-
-    // Zero-pad if nfft > nperseg
-    const fftInput = new Array(nfft).fill(0);
-    for (let i = 0; i < nperseg; i++) {
-      fftInput[i] = windowed[i];
-    }
-
-    // Compute FFT
-    const fftOutput = fft.createComplexArray();
-    fft.realTransform(fftOutput, fftInput);
-    fft.completeSpectrum(fftOutput);
-
-    // Compute magnitude spectrum
-    const magnitudes = getMagnitudeSpectrum(fftOutput, nfft);
-
-    // Accumulate power (magnitude squared)
-    for (let i = 0; i < numFreqs; i++) {
-      psdSum[i] += magnitudes[i] * magnitudes[i];
-    }
-  }
-
-  // Average and scale
-  const numSegments = segments.length;
-  const psd = new Array(numFreqs);
-
+  // Average, then apply the configured scaling (state.mode defaults to 'psd').
   for (let i = 0; i < numFreqs; i++) {
-    psd[i] = psdSum[i] / numSegments;
-
-    // Apply scaling
-    if (scaling === 'density') {
-      // Power spectral density: V²/Hz
-      // Normalize by fs * sum(window^2)
-      psd[i] = psd[i] / (fs * windowSumSquares);
-
-      // Double the power for non-DC and non-Nyquist bins (one-sided spectrum)
-      if (i > 0 && i < numFreqs - 1) {
-        psd[i] *= 2;
-      }
-    } else if (scaling === 'spectrum') {
-      // Power spectrum: V²
-      // Normalize by (sum(window))^2
-      psd[i] = psd[i] / (windowSum * windowSum);
-
-      // Double the power for non-DC and non-Nyquist bins (one-sided spectrum)
-      if (i > 0 && i < numFreqs - 1) {
-        psd[i] *= 2;
-      }
-    } else {
-      throw new Error(`Unsupported scaling: ${scaling}. Use 'density' or 'spectrum'.`);
-    }
+    psdSum[i] /= numSegments;
   }
 
-  // Generate frequency array
-  const frequencies = getFrequencies(nfft, fs);
+  const psd = new Array(numFreqs);
+  scaleInto(state, psdSum, psd, 0);
 
-  return { frequencies, psd };
+  return { frequencies: state.frequencies, psd };
 }
 
 /**
@@ -587,7 +577,8 @@ export function welch(x, {
  * @param {number|null} [options.nfft=null] - FFT length (default: nperseg, must be >= nperseg and power of 2)
  * @param {string|boolean} [options.detrend='constant'] - Detrend type ('constant' to remove mean, or false)
  * @param {string} [options.scaling='density'] - 'density' for V²/Hz or 'spectrum' for V²
- * @param {string} [options.mode='psd'] - Output mode: 'psd' or 'magnitude'
+ * @param {string} [options.mode='psd'] - Output mode: 'psd', 'magnitude' or 'db'
+ * @param {number} [options.dbEps=1e-12] - Amplitude floor added before log (mode 'db')
  * @returns {{frequencies: number[], times: number[], spectrogram: number[][]}} Object containing frequency array, time array, and 2D spectrogram (frequency × time)
  *
  * @example
@@ -605,7 +596,8 @@ export function spectrogram(x, {
   nfft = null,
   detrend = 'constant',
   scaling = 'density',
-  mode = 'psd'
+  mode = 'psd',
+  dbEps = 1e-12
 } = {}) {
   // Validate inputs
   if (!isNumericArrayLike(x) || x.length === 0) {
@@ -616,44 +608,33 @@ export function spectrogram(x, {
     throw new Error(`nperseg (${nperseg}) cannot be greater than signal length (${x.length})`);
   }
 
-  const state = createSpectrogramState({
-    fs,
-    window,
-    nperseg,
-    noverlap,
-    nfft,
-    detrend,
-    scaling,
-    mode
-  });
+  const state = createDspState({ fs, window, nperseg, noverlap, nfft, detrend, scaling, mode });
+  state.dbEps = dbEps;
 
-  // Extract segments
-  const segments = extractSegments(x, state.nperseg, state.noverlap);
+  const { numFreqs, magSq, step } = state;
+  const numTimes = Math.floor((x.length - state.nperseg) / step) + 1;
 
-  if (segments.length === 0) {
+  if (numTimes < 1) {
     throw new Error('Not enough data for even one segment');
   }
-  const numTimes = segments.length;
 
   // Initialize spectrogram array [frequency][time]
-  const spec = new Array(state.numFreqs);
-  for (let i = 0; i < state.numFreqs; i++) {
+  const spec = new Array(numFreqs);
+  for (let i = 0; i < numFreqs; i++) {
     spec[i] = new Array(numTimes);
   }
 
-  // Compute time centers for each segment
   const times = new Array(numTimes);
-  for (let i = 0; i < numTimes; i++) {
-    const segmentStart = i * state.step;
-    const segmentCenter = segmentStart + state.nperseg / 2;
-    times[i] = segmentCenter / state.fs;
-  }
+  const column = new Array(numFreqs);
 
-  // Process each segment
-  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
-    const column = computeSpectrogramColumn(segments[segIdx], state);
+  for (let segIdx = 0; segIdx < numTimes; segIdx++) {
+    const segmentStart = segIdx * step;
+    times[segIdx] = (segmentStart + state.nperseg / 2) / state.fs;
 
-    for (let i = 0; i < state.numFreqs; i++) {
+    magSqInto(state, x, segmentStart);
+    scaleInto(state, magSq, column, 0);
+
+    for (let i = 0; i < numFreqs; i++) {
       spec[i][segIdx] = column[i];
     }
   }

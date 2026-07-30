@@ -8,7 +8,7 @@ The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Fl
 
 - **Welch's Method** - Robust power spectral density estimation with overlapping segments
 - **Spectrogram** - Time-frequency analysis using short-time Fourier transform (STFT)
-- **Streaming Spectrogram** - One spectrogram column per fixed-size input chunk
+- **Streaming, allocation-free API** - `WelchStream` and `SpectrogramStream` are the streaming counterparts of `welch()` and `spectrogram()`: construct once, then `.process()` writes into caller-supplied buffers with no allocation, for hot paths like Web Workers
 - **Built on fft.js** - Fast FFT implementation optimized for JavaScript
 - **Simple API** - Inspired by scipy.signal for ease of use
 - **Custom Windows** - Support for built-in and user-defined window functions
@@ -55,6 +55,45 @@ console.log(result.frequencies); // Frequency bins
 console.log(result.psd);         // Power spectral density
 ```
 
+### `new WelchStream(options)`
+
+Computes a Welch PSD one estimate at a time from a caller-owned buffer (e.g. a ring buffer), writing directly into a caller-supplied `Float32Array`, `Float64Array`, or `number[]`. Allocation-free after construction. The streaming counterpart of `welch()`, sharing the same `mode` choices as `SpectrogramStream`.
+
+Unlike `welch()`, this is **strict**: it does not clamp `nperseg` to fit short input, and it always uses the **most recent** samples (the tail of the input) rather than every segment that fits — matching a live/streaming PSD.
+
+**Parameters:**
+- `options` (Object):
+  - `fs` (number, default: 1.0): Sampling frequency in Hz
+  - `window` (string | number[] | TypedArray, default: 'hann'): Window type or custom window array
+  - `nperseg` (number, default: 1024): Segment length (must be power of 2)
+  - `nfft` (number, default: nperseg): FFT length (must be power of 2, >= nperseg)
+  - `segments` (number, default: 8): Number of 50%-overlapped segments averaged
+  - `detrend` (string | boolean, default: 'constant'): Detrending ('constant' or false)
+  - `scaling` (string, default: 'density'): 'density' (V²/Hz) or 'spectrum' (V²) — mode 'psd' only
+  - `mode` (string, default: 'db'): Output mode ('db', 'magnitude' or 'psd')
+  - `dbEps` (number, default: 1e-20): Power floor added before `10*log10` (mode 'db' only)
+
+**Properties:**
+- `numBins` (number): Bins written per call, equal to `nfft/2 + 1`
+- `needed` (number): Minimum input length for `process()`, equal to `nperseg + (segments-1)*nperseg/2`
+- `frequencies` (number[]): Cached one-sided frequency bins
+- `windowSum`, `windowSumSquares` (number): Window normalization constants
+
+**Methods:**
+- `process(samples, out, offset = 0)` → writes `numBins` values at `out[offset…]`, returns bins written (`numBins`)
+
+**Throws:** at construction, if `nperseg`/`nfft` aren't powers of 2, `nfft < nperseg`, or `segments` isn't a positive integer; from `process()`, if `samples.length` is below `needed`
+
+**Example:**
+```javascript
+import { WelchStream } from './src/dsp.js';
+
+const stream = new WelchStream({ fs: 192000, nperseg: 1024, nfft: 2048, segments: 8 });
+const out = new Float32Array(stream.numBins); // nfft/2 + 1
+stream.process(samples, out);
+// out now holds dB values; call again each time new samples arrive — no allocation
+```
+
 ### `spectrogram(x, options)`
 
 Computes the spectrogram using short-time Fourier transform.
@@ -69,7 +108,8 @@ Computes the spectrogram using short-time Fourier transform.
   - `nfft` (number, default: nperseg): FFT length (must be power of 2, >= nperseg)
   - `detrend` (string | boolean, default: 'constant'): Detrending ('constant' or false)
   - `scaling` (string, default: 'density'): 'density' (V²/Hz) or 'spectrum' (V²)
-  - `mode` (string, default: 'psd'): Output mode ('psd' or 'magnitude')
+  - `mode` (string, default: 'psd'): Output mode ('psd', 'magnitude' or 'db')
+  - `dbEps` (number, default: 1e-12): Amplitude floor added before `log10` (mode 'db' only)
 
 **Returns:** `{frequencies: number[], times: number[], spectrogram: number[][]}`
 
@@ -94,17 +134,20 @@ console.log(result.spectrogram);  // 2D array [freq][time]
 
 ### `new SpectrogramStream(options)`
 
-Computes a spectrogram one time slice at a time from streaming input.
+Computes a spectrogram one time slice (column) at a time from streaming input, writing each column into a caller-supplied buffer. Allocation-free after construction — the FFT, window, and sliding segment buffers are all allocated once. The streaming counterpart of `spectrogram()`.
 
 **Parameters:**
-- Same as `spectrogram(x, options)`
+- Same as `spectrogram(x, options)`, but `mode` defaults to `'db'`
+- `dbEps` (number, default: 1e-12): Amplitude floor added before `log10` (mode 'db' only)
 
 **Properties:**
-- `chunkSize` (number): Required input length for each `process()` call, equal to `nperseg - noverlap`
+- `hop` (number): Required input length for each `process()` call, equal to `nperseg - noverlap`
+- `numBins` (number): Number of frequency bins written per column
 - `frequencies` (number[]): Cached one-sided frequency bins
+- `windowSum`, `windowSumSquares` (number): Window normalization constants, exposed for callers doing their own scaling
 
 **Methods:**
-- `process(chunk)` → `{frequencies: number[], time: number, spectrogram: number[]}`
+- `process(chunk, out, offset = 0)` → writes `numBins` values at `out[offset…]`, returns the time center (`number`) of this column
 - `reset()` → clears overlap history and restarts time indexing
 
 The first call to `process()` uses a zero-prefilled overlap buffer so one output column is returned immediately.
@@ -120,11 +163,12 @@ const stream = new SpectrogramStream({
   noverlap: 512,
   mode: 'magnitude'
 });
+const columnOut = new Float32Array(stream.numBins);
 
-for (let offset = 0; offset + stream.chunkSize <= signal.length; offset += stream.chunkSize) {
-  const chunk = signal.subarray(offset, offset + stream.chunkSize);
-  const result = stream.process(chunk);
-  console.log(result.time, result.spectrogram[0]);
+for (let offset = 0; offset + stream.hop <= signal.length; offset += stream.hop) {
+  const chunk = signal.subarray(offset, offset + stream.hop);
+  const time = stream.process(chunk, columnOut);
+  console.log(time, columnOut[0]);
 }
 ```
 
@@ -186,14 +230,29 @@ const stream = new SpectrogramStream({
   noverlap: 128,
   mode: 'magnitude'
 });
+const columnOut = new Float32Array(stream.numBins);
 
 function handleIncomingChunk(chunk) {
-  if (chunk.length !== stream.chunkSize) {
-    throw new Error(`Expected ${stream.chunkSize} samples`);
+  if (chunk.length !== stream.hop) {
+    throw new Error(`Expected ${stream.hop} samples`);
   }
 
-  const { time, spectrogram } = stream.process(chunk);
-  console.log(`Column at ${time.toFixed(3)} s has ${spectrogram.length} bins`);
+  const time = stream.process(chunk, columnOut);
+  console.log(`Column at ${time.toFixed(3)} s has ${columnOut.length} bins`);
+}
+```
+
+### Streaming PSD
+
+```javascript
+import { WelchStream } from './src/dsp.js';
+
+const stream = new WelchStream({ fs: 192000, nperseg: 1024, nfft: 2048, segments: 8 });
+const out = new Float32Array(stream.numBins); // nfft/2 + 1
+
+function handleIncomingSamples(ringBufferSamples) {
+  stream.process(ringBufferSamples, out);
+  console.log(`PSD updated, peak ${Math.max(...out).toFixed(1)} dB`);
 }
 ```
 
@@ -233,13 +292,15 @@ The functions will throw an error if you provide non-power-of-2 values.
 - **Welch**: Default overlap is 50% (`noverlap = nperseg/2`), which is optimal for Hann window
 - **Spectrogram**: Default overlap is 12.5% (`noverlap = nperseg/8`), which maintains statistical independence between segments
 
-For `SpectrogramStream`, each call to `process(chunk)` must provide exactly one hop of new data:
+For `SpectrogramStream`, each call to `process(chunk, out)` must provide exactly one hop of new data:
 
 ```javascript
 chunk.length === nperseg - noverlap
 ```
 
-This strict contract keeps the API deterministic: one chunk in, one column out.
+This strict contract keeps the API deterministic: one chunk in, one column written out.
+
+`WelchStream` has a different strictness: it never clamps `nperseg` to fit short input (unlike `welch()`) — `process()` throws if `samples.length < stream.needed` (`nperseg + (segments-1)*nperseg/2`). Callers that need short-input clamping must do it themselves before calling.
 
 ### Scaling Options
 
@@ -267,6 +328,7 @@ pnpm demo:dsp
 - Applies proper normalization for both 'density' and 'spectrum' scaling
 - Supports detrending to remove DC offset before FFT
 - `SpectrogramStream` zero-prefills the initial overlap history so the first chunk immediately yields one column
+- `WelchStream` and `SpectrogramStream` are allocation-free after construction: FFT plans, window arrays, and work buffers are allocated once per instance and reused across `.process()` calls
 - Validates all inputs and provides descriptive error messages
 
 ## Limitations (Simplified from SciPy)

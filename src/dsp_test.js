@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { welch, spectrogram, SpectrogramStream } from "./dsp.js";
+import { welch, WelchStream, spectrogram, SpectrogramStream } from "./dsp.js";
 
 function makeSineSignal(length, fs = 1000, frequency = 10) {
   return new Array(length).fill(0).map((_, i) => Math.sin(2 * Math.PI * frequency * i / fs));
@@ -533,16 +533,17 @@ test("spectrogram detects consistent frequency for constant sinusoid", () => {
 /**
  * Test SpectrogramStream enforces exact hop-sized chunks.
  */
-test("SpectrogramStream enforces exact chunkSize input", () => {
-  const stream = new SpectrogramStream({ nperseg: 256, noverlap: 64 });
+test("SpectrogramStream enforces exact hop input", () => {
+  const stream = new SpectrogramStream({ nperseg: 256, noverlap: 64, mode: 'magnitude' });
+  const out = new Float32Array(stream.numBins);
 
-  assertEquals(stream.chunkSize, 192);
+  assertEquals(stream.hop, 192);
   assertEquals(stream.frequencies.length, 129);
 
   assertThrows(
-    () => stream.process(new Array(191).fill(0)),
+    () => stream.process(new Array(191).fill(0), out),
     Error,
-    "Input chunk length (191) must equal chunkSize (192)"
+    "Input chunk length (191) must equal hop (192)"
   );
 });
 
@@ -552,26 +553,27 @@ test("SpectrogramStream enforces exact chunkSize input", () => {
 test("SpectrogramStream returns one column with expected time center", () => {
   const fs = 1000;
   const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 32, mode: 'magnitude' });
-  const chunk = makeSineSignal(stream.chunkSize, fs, 100);
+  const chunk = makeSineSignal(stream.hop, fs, 100);
+  const out = new Float32Array(stream.numBins);
 
-  const result = stream.process(chunk);
+  const time = stream.process(chunk, out);
 
-  assertEquals(result.frequencies.length, 129);
-  assertEquals(result.spectrogram.length, 129);
-  assertAlmostEquals(result.time, (256 / 2) / fs, 1e-12);
+  assertEquals(stream.numBins, 129);
+  assertAlmostEquals(time, (256 / 2) / fs, 1e-12);
 });
 
 /**
- * Test SpectrogramStream accepts typed-array chunks.
+ * Test SpectrogramStream accepts typed-array chunks and writes at a destination offset.
  */
-test("SpectrogramStream accepts Float32Array chunks", () => {
+test("SpectrogramStream accepts Float32Array chunks and an output offset", () => {
   const stream = new SpectrogramStream({ nperseg: 256, mode: 'magnitude' });
-  const chunk = Float32Array.from(makeSineSignal(stream.chunkSize));
+  const chunk = Float32Array.from(makeSineSignal(stream.hop));
+  const out = new Float32Array(stream.numBins * 2);
 
-  const result = stream.process(chunk);
+  stream.process(chunk, out, stream.numBins);
 
-  assertEquals(result.frequencies.length, 129);
-  assertEquals(result.spectrogram.length, 129);
+  assertEquals(out.subarray(0, stream.numBins).every((v) => v === 0), true);
+  assertEquals(out.subarray(stream.numBins).some((v) => v !== 0), true);
 });
 
 /**
@@ -580,18 +582,20 @@ test("SpectrogramStream accepts Float32Array chunks", () => {
 test("SpectrogramStream reset restores initial state", () => {
   const fs = 1000;
   const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 128, mode: 'magnitude' });
-  const firstChunk = makeSineSignal(stream.chunkSize, fs, 100);
-  const secondChunk = makeSineSignal(stream.chunkSize, fs, 100).map((value, index) =>
-    Math.sin(2 * Math.PI * 100 * (index + stream.chunkSize) / fs)
+  const firstChunk = makeSineSignal(stream.hop, fs, 100);
+  const secondChunk = makeSineSignal(stream.hop, fs, 100).map((value, index) =>
+    Math.sin(2 * Math.PI * 100 * (index + stream.hop) / fs)
   );
+  const firstOut = new Float32Array(stream.numBins);
+  const resetOut = new Float32Array(stream.numBins);
 
-  const firstResult = stream.process(firstChunk);
-  stream.process(secondChunk);
+  const firstTime = stream.process(firstChunk, firstOut);
+  stream.process(secondChunk, new Float32Array(stream.numBins));
   stream.reset();
-  const resetResult = stream.process(firstChunk);
+  const resetTime = stream.process(firstChunk, resetOut);
 
-  assertAlmostEquals(resetResult.time, firstResult.time, 1e-12);
-  assertArrayAlmostEquals(resetResult.spectrogram, firstResult.spectrogram, 1e-10);
+  assertAlmostEquals(resetTime, firstTime, 1e-12);
+  assertArrayAlmostEquals(resetOut, firstOut, 1e-10);
 });
 
 /**
@@ -605,15 +609,146 @@ test("SpectrogramStream matches batch spectrogram with zero-prefill", () => {
   const paddedSignal = new Array(noverlap).fill(0).concat(signal);
   const batchResult = spectrogram(paddedSignal, { fs, nperseg, noverlap, mode: 'magnitude' });
   const stream = new SpectrogramStream({ fs, nperseg, noverlap, mode: 'magnitude' });
+  const out = new Float32Array(stream.numBins);
 
-  for (let timeIndex = 0; timeIndex < signal.length / stream.chunkSize; timeIndex++) {
-    const chunkStart = timeIndex * stream.chunkSize;
-    const chunk = signal.slice(chunkStart, chunkStart + stream.chunkSize);
-    const streamResult = stream.process(chunk);
+  for (let timeIndex = 0; timeIndex < signal.length / stream.hop; timeIndex++) {
+    const chunkStart = timeIndex * stream.hop;
+    const chunk = signal.slice(chunkStart, chunkStart + stream.hop);
+    const time = stream.process(chunk, out);
     const expectedColumn = batchResult.spectrogram.map((row) => row[timeIndex]);
 
-    assertArrayAlmostEquals(streamResult.frequencies, batchResult.frequencies, 1e-12);
-    assertAlmostEquals(streamResult.time, batchResult.times[timeIndex], 1e-12);
-    assertArrayAlmostEquals(streamResult.spectrogram, expectedColumn, 1e-6);
+    assertAlmostEquals(time, batchResult.times[timeIndex], 1e-12);
+    assertArrayAlmostEquals(out, expectedColumn, 1e-6);
   }
+});
+
+/**
+ * Test SpectrogramStream mode 'db' matches the legacy display-dB conversion applied
+ * to SpectrogramStream mode 'magnitude' output, column by column.
+ */
+test("SpectrogramStream mode 'db' matches display-dB over SpectrogramStream mode 'magnitude'", () => {
+  const fs = 1000;
+  const nperseg = 256;
+  const noverlap = 32;
+  const signal = makeSineSignal(2048, fs, 100);
+  const magStream = new SpectrogramStream({ fs, nperseg, noverlap, mode: 'magnitude' });
+  const dbStream = new SpectrogramStream({ fs, nperseg, noverlap, mode: 'db' });
+  const magOut = new Float32Array(magStream.numBins);
+  const dbOut = new Float32Array(dbStream.numBins);
+
+  for (let start = 0; start + magStream.hop <= signal.length; start += magStream.hop) {
+    const chunk = signal.slice(start, start + magStream.hop);
+    magStream.process(chunk, magOut);
+    dbStream.process(chunk, dbOut);
+
+    const expectedDb = Array.from(magOut).map(
+      (magnitude) => 20 * Math.log10((magnitude * Math.sqrt(magStream.windowSumSquares * fs) * 2) / magStream.windowSum + 1e-12)
+    );
+
+    // 1e-4 accounts for Float32Array output rounding at dB magnitude ~40-50.
+    assertArrayAlmostEquals(Array.from(dbOut), expectedDb, 1e-4);
+  }
+});
+
+/**
+ * Test SpectrogramStream sustains many hops into a fixed output buffer (no aliasing
+ * from buffer reuse across calls).
+ */
+test("SpectrogramStream sustains 1000 hops into a pre-sized buffer", () => {
+  const fs = 1000;
+  const stream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 32, mode: 'magnitude' });
+  const out = new Float32Array(stream.numBins);
+  const chunk = makeSineSignal(stream.hop, fs, 100);
+
+  let lastTime = -Infinity;
+  for (let i = 0; i < 1000; i++) {
+    const time = stream.process(chunk, out);
+    assertEquals(time > lastTime, true);
+    lastTime = time;
+  }
+
+  assertEquals(out.some((v) => Number.isFinite(v) && v !== 0), true);
+});
+
+/**
+ * Test WelchStream mode 'db' matches 10*log10(welch().psd + 1e-20) for both
+ * plain arrays and typed-array input.
+ */
+test("WelchStream mode 'db' matches batch welch() in dB", () => {
+  const fs = 1000;
+  const nperseg = 256;
+  const segments = 4;
+  const noverlap = Math.floor(nperseg / 2);
+  const needed = nperseg + (segments - 1) * (nperseg - noverlap);
+  const signal = makeSineSignal(needed, fs, 50);
+
+  const batch = welch(signal, { fs, nperseg, noverlap });
+  const expectedDb = batch.psd.map((value) => 10 * Math.log10(value + 1e-20));
+
+  const stream = new WelchStream({ fs, nperseg, segments });
+  assertEquals(stream.numBins, batch.frequencies.length);
+
+  const out = new Float32Array(stream.numBins);
+  const bins = stream.process(signal, out);
+
+  assertEquals(bins, batch.frequencies.length);
+  // 1e-4 accounts for Float32Array output rounding at dB magnitude ~40-50.
+  assertArrayAlmostEquals(Array.from(out), expectedDb, 1e-4);
+
+  // Float32Array *input* quantizes the samples themselves, so bins near the
+  // numerical noise floor diverge from the float64 reference; only compare
+  // bins comfortably above it (there's a real signal peak at -11 dB here).
+  const outTyped = new Float32Array(stream.numBins);
+  stream.process(Float32Array.from(signal), outTyped);
+  for (let i = 0; i < expectedDb.length; i++) {
+    if (expectedDb[i] < -60) continue;
+    assertAlmostEquals(outTyped[i], expectedDb[i], 1e-4);
+  }
+});
+
+/**
+ * Test WelchStream mode 'psd' matches batch welch()'s linear PSD directly
+ * (no dB conversion) - the same parity as SpectrogramStream's 'psd'/'magnitude' modes
+ * against spectrogram().
+ */
+test("WelchStream mode 'psd' matches batch welch() directly", () => {
+  const fs = 1000;
+  const nperseg = 256;
+  const segments = 4;
+  const noverlap = Math.floor(nperseg / 2);
+  const needed = nperseg + (segments - 1) * (nperseg - noverlap);
+  const signal = makeSineSignal(needed, fs, 50);
+
+  const batch = welch(signal, { fs, nperseg, noverlap });
+  const stream = new WelchStream({ fs, nperseg, segments, mode: 'psd' });
+  const out = new Float32Array(stream.numBins);
+  stream.process(signal, out);
+
+  assertArrayAlmostEquals(Array.from(out), batch.psd, 1e-6);
+});
+
+/**
+ * Test WelchStream is strict about insufficient samples and bad params.
+ */
+test("WelchStream throws on insufficient samples and invalid params", () => {
+  assertThrows(
+    () => new WelchStream({ nperseg: 100, segments: 1 }),
+    Error,
+    "nperseg must be a power of 2"
+  );
+
+  assertThrows(
+    () => new WelchStream({ nperseg: 256, segments: 0 }),
+    Error,
+    "segments"
+  );
+
+  const stream = new WelchStream({ nperseg: 256, segments: 8 });
+  const out = new Float32Array(stream.numBins);
+
+  assertThrows(
+    () => stream.process(makeSineSignal(300), out),
+    Error,
+    "too short"
+  );
 });

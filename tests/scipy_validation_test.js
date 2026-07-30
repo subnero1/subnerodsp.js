@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { welch, spectrogram } from "../src/dsp.js";
+import { welch, WelchStream, spectrogram } from "../src/dsp.js";
 
 function assertEquals(actual, expected, message) {
   assert.deepEqual(actual, expected, message);
@@ -294,6 +294,27 @@ test("Welch: sine_100hz - zero padding (nfft > nperseg)", () => {
 
   assertArrayAlmostEquals(result.frequencies, ref.frequencies, 1e-10, 1e-12, "Frequencies");
   assertArrayAlmostEquals(result.psd, ref.psd, 1e-5, 1e-10, "PSD");
+});
+
+/********************* Streaming Welch PSD (WelchStream) Validation Tests *********************/
+
+test("WelchStream: sine_100hz - default parameters (dB)", () => {
+  const signalData = referenceData.signals.sine_100hz;
+  const ref = referenceData.welch_streaming.sine_100hz.default;
+  const expectedDb = ref.psd.map((value) => 10 * Math.log10(value + 1e-20));
+
+  const stream = new WelchStream({
+    fs: signalData.fs,
+    nperseg: ref.params.nperseg,
+    segments: ref.params.segments
+  });
+  const out = new Float32Array(stream.numBins);
+  const bins = stream.process(signalData.signal, out);
+
+  assertEquals(bins, ref.frequencies.length);
+  // 1e-3 accounts for Float32Array output rounding on top of the usual 1e-5
+  // rtol scipy tolerance, once both are expressed in dB.
+  assertArrayAlmostEquals(Array.from(out), expectedDb, 1e-3, 1e-6, "Streaming PSD (dB)");
 });
 
 /********************* Spectrogram Validation Tests *********************/

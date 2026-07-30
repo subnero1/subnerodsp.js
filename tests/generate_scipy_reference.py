@@ -102,6 +102,43 @@ def compute_welch_reference(signal_data, test_params):
     return results
 
 
+def compute_welch_streaming_reference(signal_data, test_params):
+    """Compute Welch PSD over the trailing window of a signal, matching
+    welchInto()'s "use the most recent samples" semantics: nperseg + (segments-1)*(nperseg/2)
+    samples taken from the end, 50%-overlapped segments starting at offset 0 of that window."""
+    results = {}
+
+    for test_name, params in test_params.items():
+        fs = signal_data['fs']
+        nperseg = params['nperseg']
+        segments = params['segments']
+        step = nperseg // 2
+        needed = nperseg + (segments - 1) * step
+
+        sig = np.array(signal_data['signal'])[-needed:]
+
+        f, psd = signal.welch(
+            sig,
+            fs=fs,
+            window='hann',
+            nperseg=nperseg,
+            noverlap=step,
+            detrend='constant',
+            return_onesided=True,
+            scaling='density',
+            average='mean'
+        )
+
+        results[test_name] = {
+            'params': params,
+            'needed_samples': needed,
+            'frequencies': f.tolist(),
+            'psd': psd.tolist()
+        }
+
+    return results
+
+
 def compute_spectrogram_reference(signal_data, test_params):
     """Compute spectrogram using SciPy for various parameter combinations."""
     results = {}
@@ -225,10 +262,18 @@ def main():
         }
     }
 
+    welch_streaming_params = {
+        'default': {
+            'nperseg': 256,
+            'segments': 8
+        }
+    }
+
     # Generate reference data
     reference_data = {
         'signals': signals,
         'welch': {},
+        'welch_streaming': {},
         'spectrogram': {}
     }
 
@@ -237,6 +282,13 @@ def main():
         print(f"  Processing {signal_name}...")
         reference_data['welch'][signal_name] = compute_welch_reference(
             signal_data, welch_params
+        )
+
+    print("Computing streaming Welch PSD reference data...")
+    for signal_name, signal_data in signals.items():
+        print(f"  Processing {signal_name}...")
+        reference_data['welch_streaming'][signal_name] = compute_welch_streaming_reference(
+            signal_data, welch_streaming_params
         )
 
     print("Computing spectrogram reference data...")
