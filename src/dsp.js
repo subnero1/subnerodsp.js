@@ -641,3 +641,258 @@ export function spectrogram(x, {
 
   return { frequencies: state.frequencies, times, spectrogram: spec };
 }
+
+/**
+ * Validates a samples-per-symbol / resampling factor.
+ * @param {number} sps - Samples per baseband sample
+ * @throws {Error} If sps is not a positive integer
+ */
+function validateSps(sps) {
+  if (!Number.isInteger(sps) || sps < 1) {
+    throw new Error(`sps must be a positive integer. Got ${sps}`);
+  }
+}
+
+/**
+ * Generates a root raised cosine FIR pulse shaping filter.
+ * Port of SignalAnalysis.jl's rrcosfir(), normalized to unit energy.
+ * @param {number} beta - Roll-off factor
+ * @param {number} sps - Samples per symbol
+ * @returns {Float64Array} Filter taps, length 2*floor(span*sps/2)+1
+ */
+function rrcosfir(beta, sps) {
+  const span = beta < 0.68 ? 33 - Math.floor(44 * beta) : 4;
+  const delay = Math.floor((span * sps) / 2);
+  const h = new Float64Array(2 * delay + 1);
+
+  for (let i = 0; i < h.length; i++) {
+    const t = (i - delay) / sps;
+    if (t === 0) {
+      h[i] = (1 + beta * (4 / Math.PI - 1)) / sps;
+    } else if (Math.abs(t) === 1 / (4 * beta)) {
+      h[i] = (beta / (Math.SQRT2 * sps)) *
+        ((1 + 2 / Math.PI) * Math.sin(Math.PI / (4 * beta)) +
+         (1 - 2 / Math.PI) * Math.cos(Math.PI / (4 * beta)));
+    } else {
+      h[i] = (Math.sin(Math.PI * t * (1 - beta)) +
+              4 * beta * t * Math.cos(Math.PI * t * (1 + beta))) /
+             (Math.PI * t * (1 - (4 * beta * t) ** 2)) / sps;
+    }
+  }
+
+  const norm = Math.sqrt(sumSquaresArrayLike(h));
+  for (let i = 0; i < h.length; i++) {
+    h[i] /= norm;
+  }
+
+  return h;
+}
+
+/**
+ * Computes the analytic signal of a real signal: hilbert(x) / sqrt(2).
+ * Matches SignalAnalysis.jl's analytic(), whose 1/sqrt(2) scaling undoes the
+ * sqrt(2) applied by upconvert().
+ *
+ * fft.js needs a power-of-2 length, so shorter signals are zero-padded
+ * and truncated back. The real part stays exact; for non-power-of-2 lengths the
+ * imaginary part differs slightly from an exact-length FFT (different wraparound).
+ *
+ * @param {ArrayLike<number>} x - Real input signal
+ * @returns {Float64Array} Interleaved complex analytic signal, length 2*x.length
+ */
+function analytic(x) {
+  const n = x.length;
+  let nfft = 2;
+  while (nfft < n) nfft *= 2;
+
+  const fft = new FFT(nfft);
+  const input = new Float64Array(nfft);
+  for (let i = 0; i < n; i++) {
+    input[i] = x[i];
+  }
+
+  const spectrum = fft.createComplexArray();
+  fft.realTransform(spectrum, input);
+  fft.completeSpectrum(spectrum);
+
+  // One-sided spectrum: double the positive frequencies, zero the negative ones.
+  // DC and Nyquist are left untouched.
+  for (let i = 1; i < nfft / 2; i++) {
+    spectrum[2 * i] *= 2;
+    spectrum[2 * i + 1] *= 2;
+  }
+  for (let i = nfft / 2 + 1; i < nfft; i++) {
+    spectrum[2 * i] = 0;
+    spectrum[2 * i + 1] = 0;
+  }
+
+  const timeDomain = fft.createComplexArray();
+  fft.inverseTransform(timeDomain, spectrum);
+
+  const out = new Float64Array(2 * n);
+  for (let i = 0; i < 2 * n; i++) {
+    out[i] = timeDomain[i] / Math.SQRT2;
+  }
+
+  return out;
+}
+
+/**
+ * Interpolates an interleaved complex signal by an integer factor.
+ *
+ * Equivalent to DSP.jl's resample(x, sps, h): zero-stuff by sps, convolve with h,
+ * and drop the filter's group delay of (h.length-1)/2 output samples.
+ *
+ * @param {ArrayLike<number>} x - Interleaved complex input
+ * @param {number} sps - Interpolation factor
+ * @param {Float64Array} h - Filter taps (odd length)
+ * @returns {Float64Array} Interleaved complex output, length sps*x.length
+ */
+function interpolate(x, sps, h) {
+  const n = x.length / 2;
+  const delay = (h.length - 1) / 2;
+  const out = new Float64Array(2 * n * sps);
+
+  for (let i = 0; i < n * sps; i++) {
+    const base = i + delay;
+    let re = 0;
+    let im = 0;
+    // Only taps aligned with a non-zero (non-stuffed) input sample contribute.
+    for (let k = base % sps; k < h.length; k += sps) {
+      const m = (base - k) / sps;
+      if (m >= 0 && m < n) {
+        re += h[k] * x[2 * m];
+        im += h[k] * x[2 * m + 1];
+      }
+    }
+    out[2 * i] = re;
+    out[2 * i + 1] = im;
+  }
+
+  return out;
+}
+
+/**
+ * Decimates an interleaved complex signal by an integer factor.
+ *
+ * Equivalent to DSP.jl's resample(x, 1//sps, h): convolve with h, drop the
+ * group delay of (h.length-1)/2 samples, and keep every sps-th sample.
+ *
+ * @param {ArrayLike<number>} x - Interleaved complex input
+ * @param {number} sps - Decimation factor
+ * @param {Float64Array} h - Filter taps (odd length)
+ * @returns {Float64Array} Interleaved complex output, length 2*ceil(x.length/2/sps)
+ */
+function decimate(x, sps, h) {
+  const n = x.length / 2;
+  const delay = (h.length - 1) / 2;
+  const outLen = Math.ceil(n / sps);
+  const out = new Float64Array(2 * outLen);
+
+  for (let j = 0; j < outLen; j++) {
+    const base = j * sps + delay;
+    let re = 0;
+    let im = 0;
+    for (let k = Math.max(0, base - n + 1); k < h.length && k <= base; k++) {
+      const m = base - k;
+      re += h[k] * x[2 * m];
+      im += h[k] * x[2 * m + 1];
+    }
+    out[2 * j] = re;
+    out[2 * j + 1] = im;
+  }
+
+  return out;
+}
+
+/**
+ * Converts a complex baseband signal to a real passband signal centered at fc.
+ *
+ * Port of SignalAnalysis.jl's upconvert(). When sps > 1 the signal is interpolated
+ * with a root raised cosine pulse shape (beta = 0.25), which pads the signal with
+ * 11 baseband samples of filter transient on each side.
+ *
+ * @param {ArrayLike<number>} x - Baseband signal as interleaved complex [I0, Q0, I1, Q1, ...]
+ * @param {Object} options - Configuration options
+ * @param {number} [options.sps=1] - Passband samples per baseband sample (positive integer)
+ * @param {number} [options.fc=0] - Carrier frequency (same units as fs)
+ * @param {number} [options.fs=1.0] - Baseband sampling frequency; output rate is sps*fs
+ * @returns {Float64Array} Real passband signal, length x.length/2 if sps is 1, else (x.length/2 + 22)*sps
+ *
+ * @example
+ * const baseband = [1, 0, 0, 1, -1, 0];  // 3 complex samples
+ * const passband = upconvert(baseband, {sps: 4, fc: 12000, fs: 8000});
+ */
+export function upconvert(x, { sps = 1, fc = 0, fs = 1.0 } = {}) {
+  if (!isNumericArrayLike(x) || x.length === 0) {
+    throw new Error('Input signal x must be a non-empty array or typed array');
+  }
+
+  if (x.length % 2 !== 0) {
+    throw new Error(`Baseband signal must be interleaved complex (even length). Got ${x.length}`);
+  }
+
+  validateSps(sps);
+
+  let s = x;
+
+  if (sps > 1) {
+    const h = rrcosfir(0.25, sps);
+    // Pad with the filter's transient length so no signal energy is lost.
+    const pad = Math.ceil(h.length / (2 * sps)) - 1;
+    const padded = new Float64Array(x.length + 4 * pad);
+    for (let i = 0; i < x.length; i++) {
+      padded[2 * pad + i] = x[i];
+    }
+    s = interpolate(padded, sps, h);
+  }
+
+  const n = s.length / 2;
+  const fsOut = sps * fs;
+  const out = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const phase = (2 * Math.PI * fc * i) / fsOut;
+    out[i] = Math.SQRT2 * (s[2 * i] * Math.cos(phase) - s[2 * i + 1] * Math.sin(phase));
+  }
+
+  return out;
+}
+
+/**
+ * Converts a real passband signal centered at fc to complex baseband.
+ *
+ * Port of SignalAnalysis.jl's downconvert(). The negative frequency image is removed
+ * by taking the analytic signal; when sps > 1 the result is matched-filtered with a
+ * root raised cosine pulse shape (beta = 0.25) and decimated.
+ *
+ * @param {ArrayLike<number>} x - Real passband signal
+ * @param {Object} options - Configuration options
+ * @param {number} [options.sps=1] - Passband samples per baseband sample (positive integer)
+ * @param {number} [options.fc=0] - Carrier frequency (same units as fs)
+ * @param {number} [options.fs=1.0] - Passband sampling frequency; output rate is fs/sps
+ * @returns {Float64Array} Baseband signal as interleaved complex, length 2*ceil(x.length/sps)
+ *
+ * @example
+ * const baseband = downconvert(passband, {sps: 4, fc: 12000, fs: 32000});
+ * const i0 = baseband[0], q0 = baseband[1];
+ */
+export function downconvert(x, { sps = 1, fc = 0, fs = 1.0 } = {}) {
+  if (!isNumericArrayLike(x) || x.length === 0) {
+    throw new Error('Input signal x must be a non-empty array or typed array');
+  }
+
+  validateSps(sps);
+
+  const s = analytic(x);
+
+  for (let i = 0; i < x.length; i++) {
+    const phase = (-2 * Math.PI * fc * i) / fs;
+    const re = s[2 * i];
+    const im = s[2 * i + 1];
+    s[2 * i] = re * Math.cos(phase) - im * Math.sin(phase);
+    s[2 * i + 1] = re * Math.sin(phase) + im * Math.cos(phase);
+  }
+
+  return sps === 1 ? s : decimate(s, sps, rrcosfir(0.25, sps));
+}

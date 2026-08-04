@@ -4,7 +4,7 @@
  * Run with: node examples/dsp_demo.js
  */
 
-import { welch, spectrogram } from "../src/dsp.js";
+import { welch, spectrogram, upconvert, downconvert } from "../src/dsp.js";
 
 // Generate a test signal: 100 Hz + 250 Hz sinusoids with noise
 const fs = 1000; // 1 kHz sampling rate
@@ -113,5 +113,27 @@ const magResult = spectrogram(signal, {
 
 console.log(`Magnitude spectrogram shape: ${magResult.spectrogram.length} × ${magResult.spectrogram[0].length}`);
 console.log(`Max magnitude in spectrogram: ${Math.max(...magResult.spectrogram.flat()).toFixed(4)}`);
+
+// Example 5: Baseband <-> passband conversion
+console.log("\n=== Up/Downconversion ===");
+const nsym = 256;
+const baseband = new Float64Array(2 * nsym);
+for (let i = 0; i < nsym; i++) {
+  baseband[2 * i] = Math.cos(2 * Math.PI * 4 * i / nsym);
+  baseband[2 * i + 1] = Math.sin(2 * Math.PI * 3 * i / nsym);
+}
+
+const bbFs = 1000;
+const carrier = bbFs * 8 / nsym;
+const pb = upconvert(baseband, { sps: 1, fc: carrier, fs: bbFs });
+const bb = downconvert(pb, { sps: 1, fc: carrier, fs: bbFs });
+
+let maxError = 0;
+for (let i = 0; i < baseband.length; i++) {
+  maxError = Math.max(maxError, Math.abs(bb[i] - baseband[i]));
+}
+
+console.log(`Passband samples: ${pb.length}, baseband samples: ${bb.length / 2}`);
+console.log(`Round trip max error: ${maxError.toExponential(2)}`);
 
 console.log("\n✓ Demo completed successfully!");

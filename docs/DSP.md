@@ -8,6 +8,7 @@ The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Fl
 
 - **Welch's Method** - Robust power spectral density estimation with overlapping segments
 - **Spectrogram** - Time-frequency analysis using short-time Fourier transform (STFT)
+- **Up/downconversion** - Complex baseband ↔ real passband, matching SignalAnalysis.jl
 - **Streaming, allocation-free API** - `WelchStream` and `SpectrogramStream` are the streaming counterparts of `welch()` and `spectrogram()`: construct once, then `.process()` writes into caller-supplied buffers with no allocation, for hot paths like Web Workers
 - **Built on fft.js** - Fast FFT implementation optimized for JavaScript
 - **Simple API** - Inspired by scipy.signal for ease of use
@@ -172,6 +173,53 @@ for (let offset = 0; offset + stream.hop <= signal.length; offset += stream.hop)
 }
 ```
 
+### `upconvert(x, options)`
+
+Converts a complex baseband signal to a real passband signal centered at carrier frequency `fc`. Port of [SignalAnalysis.jl](https://github.com/org-arl/SignalAnalysis.jl)'s `upconvert()`.
+
+Baseband signals are **interleaved complex**: `[I0, Q0, I1, Q1, ...]`. Passband signals are plain real arrays.
+
+**Parameters:**
+- `x` (Array | TypedArray): Baseband signal, interleaved complex (even length)
+- `options.sps` (number, default: 1): Passband samples per baseband sample; must be a positive integer
+- `options.fc` (number, default: 0): Carrier frequency, in the same units as `fs`
+- `options.fs` (number, default: 1.0): Baseband sampling frequency. The output sample rate is `sps * fs`
+
+**Returns:** `Float64Array` — the real passband signal.
+
+When `sps > 1` the signal is interpolated with a root raised cosine pulse shape (roll-off β = 0.25, the SignalAnalysis.jl default; not configurable here). That pads the signal with 11 baseband samples of filter transient on each side, so the output length is `(x.length / 2 + 22) * sps`. When `sps === 1` no filtering is applied and the output length is `x.length / 2`.
+
+**Example:**
+```javascript
+import { upconvert } from './src/dsp.js';
+
+// 3 complex baseband samples at 8 kHz, carrier at 12 kHz, 4 samples per symbol
+const baseband = [1, 0, 0, 1, -1, 0];
+const passband = upconvert(baseband, { sps: 4, fc: 12000, fs: 8000 });
+```
+
+### `downconvert(x, options)`
+
+Converts a real passband signal centered at `fc` back to complex baseband. Port of SignalAnalysis.jl's `downconvert()`.
+
+**Parameters:**
+- `x` (Array | TypedArray): Real passband signal
+- `options.sps` (number, default: 1): Passband samples per baseband sample; must be a positive integer
+- `options.fc` (number, default: 0): Carrier frequency, in the same units as `fs`
+- `options.fs` (number, default: 1.0): Passband sampling frequency. The output sample rate is `fs / sps`
+
+**Returns:** `Float64Array` — the baseband signal, interleaved complex, of length `2 * ceil(x.length / sps)`.
+
+The negative frequency image is removed by taking the analytic signal (Hilbert transform, scaled by `1/√2` to undo the `√2` applied by `upconvert()`). When `sps > 1` the result is matched-filtered with the same root raised cosine pulse shape and decimated.
+
+**Example:**
+```javascript
+import { downconvert } from './src/dsp.js';
+
+const baseband = downconvert(passband, { sps: 4, fc: 12000, fs: 32000 });
+const [i0, q0] = [baseband[0], baseband[1]];
+```
+
 ## Usage Examples
 
 ### Basic PSD Estimation
@@ -302,6 +350,14 @@ This strict contract keeps the API deterministic: one chunk in, one column writt
 
 `WelchStream` has a different strictness: it never clamps `nperseg` to fit short input (unlike `welch()`) — `process()` throws if `samples.length < stream.needed` (`nperseg + (segments-1)*nperseg/2`). Callers that need short-input clamping must do it themselves before calling.
 
+### Analytic Signal Length
+
+`downconvert()` computes the analytic signal with fft.js, which requires a power-of-2 length. Signals of other lengths are zero-padded and truncated back. The real part is unaffected; the imaginary part differs slightly from an exact-length transform. For bit-exact agreement with SignalAnalysis.jl, use power-of-2 passband lengths.
+
+### Carrier Phase Precision
+
+SignalAnalysis.jl stores its frame rate as `Float32`, so its carrier phase axis is single precision. This implementation mixes in double precision, so results agree with the Julia library to ~1e-5 over long signals rather than exactly — the difference is Julia's rounding, not ours. See `tests/generate_signalanalysis_reference.jl`.
+
 ### Scaling Options
 
 - **'density'** (default): Returns power spectral density in V²/Hz units
@@ -313,6 +369,12 @@ Run the test suite:
 
 ```bash
 pnpm test:dsp
+```
+
+Validate `upconvert`/`downconvert` against SignalAnalysis.jl reference data (requires Julia to regenerate, see `tests/README.md`):
+
+```bash
+pnpm test:julia
 ```
 
 Run the demo:
@@ -329,6 +391,7 @@ pnpm demo:dsp
 - Supports detrending to remove DC offset before FFT
 - `SpectrogramStream` zero-prefills the initial overlap history so the first chunk immediately yields one column
 - `WelchStream` and `SpectrogramStream` are allocation-free after construction: FFT plans, window arrays, and work buffers are allocated once per instance and reused across `.process()` calls
+- `upconvert`/`downconvert` reproduce SignalAnalysis.jl, including DSP.jl's resampling group-delay compensation
 - Validates all inputs and provides descriptive error messages
 
 ## Limitations (Simplified from SciPy)
@@ -337,6 +400,7 @@ pnpm demo:dsp
 - Only 'constant' detrending (remove mean) implemented
 - No multi-dimensional array support (1D signals only)
 - Always returns one-sided spectrum (real input assumption)
+- `upconvert`/`downconvert` use a fixed root raised cosine pulse shape (β = 0.25); the pulse shape is not configurable, and only integer `sps` is supported
 
 ## License
 

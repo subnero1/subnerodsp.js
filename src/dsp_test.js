@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { welch, WelchStream, spectrogram, SpectrogramStream } from "./dsp.js";
+import { welch, WelchStream, spectrogram, SpectrogramStream, upconvert, downconvert } from "./dsp.js";
 
 function makeSineSignal(length, fs = 1000, frequency = 10) {
   return new Array(length).fill(0).map((_, i) => Math.sin(2 * Math.PI * frequency * i / fs));
@@ -751,4 +751,62 @@ test("WelchStream throws on insufficient samples and invalid params", () => {
     Error,
     "too short"
   );
+});
+
+/**
+ * Test that upconvert followed by downconvert recovers the baseband signal.
+ */
+test("upconvert/downconvert round trip recovers baseband", () => {
+  // Whole numbers of cycles per window, so the FFT-based Hilbert transform in
+  // downconvert() has no wraparound error and recovery is exact.
+  const n = 256;
+  const fs = 1000;
+  const fc = (fs * 8) / n;
+  const baseband = new Float64Array(2 * n);
+  for (let i = 0; i < n; i++) {
+    baseband[2 * i] = Math.cos((2 * Math.PI * 4 * i) / n);
+    baseband[2 * i + 1] = Math.sin((2 * Math.PI * 3 * i) / n);
+  }
+
+  const passband = upconvert(baseband, { sps: 1, fc, fs });
+  const recovered = downconvert(passband, { sps: 1, fc, fs });
+
+  assertArrayAlmostEquals(Array.from(recovered), Array.from(baseband), 1e-9);
+});
+
+/**
+ * Test upconvert with fc = 0 is just a sqrt(2) gain on the in-phase component.
+ */
+test("upconvert at fc = 0 scales the in-phase component", () => {
+  const baseband = [1, 0, -0.5, 0, 0.25, 0];
+  assertArrayAlmostEquals(
+    Array.from(upconvert(baseband, { sps: 1, fc: 0 })),
+    [Math.SQRT2, -Math.SQRT2 / 2, Math.SQRT2 / 4]
+  );
+});
+
+/**
+ * Test output lengths and sample rates for both conversions.
+ */
+test("upconvert/downconvert output lengths", () => {
+  const baseband = new Float64Array(2 * 100);
+
+  assertEquals(upconvert(baseband, { sps: 1 }).length, 100);
+  // sps > 1 adds 11 baseband samples of pulse shape transient on each side.
+  assertEquals(upconvert(baseband, { sps: 4 }).length, (100 + 22) * 4);
+
+  const passband = new Float64Array(100);
+  assertEquals(downconvert(passband, { sps: 1 }).length, 200);
+  assertEquals(downconvert(passband, { sps: 4 }).length, 2 * 25);
+});
+
+/**
+ * Test input validation for upconvert and downconvert.
+ */
+test("upconvert/downconvert reject invalid inputs", () => {
+  assertThrows(() => upconvert([1, 2, 3]), Error, "interleaved complex");
+  assertThrows(() => upconvert([]), Error, "non-empty");
+  assertThrows(() => downconvert([]), Error, "non-empty");
+  assertThrows(() => upconvert([1, 0], { sps: 0 }), Error, "sps must be a positive integer");
+  assertThrows(() => downconvert([1], { sps: 1.5 }), Error, "sps must be a positive integer");
 });
