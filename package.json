@@ -1,0 +1,43 @@
+{
+  "name": "subnerodsp",
+  "version": "1.0.0",
+  "description": "Digital signal processing in JavaScript: Welch PSD, spectrograms, and baseband/passband conversion",
+  "type": "module",
+  "main": "src/dsp.js",
+  "exports": {
+    ".": "./src/dsp.js"
+  },
+  "files": [
+    "src/dsp.js"
+  ],
+  "scripts": {
+    "test": "node --test src/dsp_test.js tests/scipy_validation_test.js tests/signalanalysis_validation_test.js",
+    "test:unit": "node --test src/dsp_test.js",
+    "test:scipy": "node --test tests/scipy_validation_test.js",
+    "test:julia": "node --test tests/signalanalysis_validation_test.js",
+    "demo": "node examples/dsp_demo.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subnero1/subnerodsp.js.git"
+  },
+  "keywords": [
+    "dsp",
+    "fft",
+    "welch",
+    "psd",
+    "spectrogram",
+    "upconvert",
+    "downconvert",
+    "signal-processing"
+  ],
+  "author": "Chinmay Pendharkar (chinmay@subnero.com)",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/subnero1/subnerodsp.js/issues"
+  },
+  "homepage": "https://github.com/subnero1/subnerodsp.js#readme",
+  "dependencies": {
+    "fft.js": "^4.0.4"
+  }
+}

@@ -43,7 +43,7 @@ Computes the Power Spectral Density using Welch's method.
 
 **Example:**
 ```javascript
-import { welch } from './src/dsp.js';
+import { welch } from 'subnerodsp';
 
 const signal = Float32Array.from([...]); // Your audio signal
 const result = welch(signal, {
@@ -87,7 +87,7 @@ Unlike `welch()`, this is **strict**: it does not clamp `nperseg` to fit short i
 
 **Example:**
 ```javascript
-import { WelchStream } from './src/dsp.js';
+import { WelchStream } from 'subnerodsp';
 
 const stream = new WelchStream({ fs: 192000, nperseg: 1024, nfft: 2048, segments: 8 });
 const out = new Float32Array(stream.numBins); // nfft/2 + 1
@@ -118,7 +118,7 @@ The `spectrogram` is a 2D array where `spectrogram[f][t]` is the value at freque
 
 **Example:**
 ```javascript
-import { spectrogram } from './src/dsp.js';
+import { spectrogram } from 'subnerodsp';
 
 const signal = Float32Array.from([...]); // Your audio signal
 const result = spectrogram(signal, {
@@ -155,7 +155,7 @@ The first call to `process()` uses a zero-prefilled overlap buffer so one output
 
 **Example:**
 ```javascript
-import { SpectrogramStream } from './src/dsp.js';
+import { SpectrogramStream } from 'subnerodsp';
 
 const signal = Float32Array.from([...]);
 const stream = new SpectrogramStream({
@@ -191,7 +191,7 @@ When `sps > 1` the signal is interpolated with a root raised cosine pulse shape 
 
 **Example:**
 ```javascript
-import { upconvert } from './src/dsp.js';
+import { upconvert } from 'subnerodsp';
 
 // 3 complex baseband samples at 8 kHz, carrier at 12 kHz, 4 samples per symbol
 const baseband = [1, 0, 0, 1, -1, 0];
@@ -214,7 +214,7 @@ The negative frequency image is removed by taking the analytic signal (Hilbert t
 
 **Example:**
 ```javascript
-import { downconvert } from './src/dsp.js';
+import { downconvert } from 'subnerodsp';
 
 const baseband = downconvert(passband, { sps: 4, fc: 12000, fs: 32000 });
 const [i0, q0] = [baseband[0], baseband[1]];
@@ -225,7 +225,7 @@ const [i0, q0] = [baseband[0], baseband[1]];
 ### Basic PSD Estimation
 
 ```javascript
-import { welch } from './src/dsp.js';
+import { welch } from 'subnerodsp';
 
 // Generate a 100 Hz sine wave
 const fs = 1000;
@@ -244,7 +244,7 @@ console.log(`Peak at ${frequencies[peakIdx].toFixed(2)} Hz`);
 ### Time-Frequency Analysis
 
 ```javascript
-import { spectrogram } from './src/dsp.js';
+import { spectrogram } from 'subnerodsp';
 
 // Chirp signal: frequency increases over time
 const fs = 1000;
@@ -269,7 +269,7 @@ console.log(`Spectrogram size: ${frequencies.length} × ${times.length}`);
 ### Streaming Time-Frequency Analysis
 
 ```javascript
-import { SpectrogramStream } from './src/dsp.js';
+import { SpectrogramStream } from 'subnerodsp';
 
 const fs = 1000;
 const stream = new SpectrogramStream({
@@ -293,7 +293,7 @@ function handleIncomingChunk(chunk) {
 ### Streaming PSD
 
 ```javascript
-import { WelchStream } from './src/dsp.js';
+import { WelchStream } from 'subnerodsp';
 
 const stream = new WelchStream({ fs: 192000, nperseg: 1024, nfft: 2048, segments: 8 });
 const out = new Float32Array(stream.numBins); // nfft/2 + 1
@@ -307,7 +307,7 @@ function handleIncomingSamples(ringBufferSamples) {
 ### Custom Window Function
 
 ```javascript
-import { welch } from './src/dsp.js';
+import { welch } from 'subnerodsp';
 
 // Create a Hamming window
 const nperseg = 512;
