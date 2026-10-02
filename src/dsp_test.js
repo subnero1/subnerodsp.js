@@ -559,7 +559,7 @@ test("SpectrogramStream returns one column with expected time center", () => {
   const time = stream.process(chunk, out);
 
   assertEquals(stream.numBins, 129);
-  assertAlmostEquals(time, (256 / 2) / fs, 1e-12);
+  assertAlmostEquals(time, (256 / 2 - 32) / fs, 1e-12);
 });
 
 /**
@@ -617,7 +617,7 @@ test("SpectrogramStream matches batch spectrogram with zero-prefill", () => {
     const time = stream.process(chunk, out);
     const expectedColumn = batchResult.spectrogram.map((row) => row[timeIndex]);
 
-    assertAlmostEquals(time, batchResult.times[timeIndex], 1e-12);
+    assertAlmostEquals(time, batchResult.times[timeIndex] - noverlap / fs, 1e-12);
     assertArrayAlmostEquals(out, expectedColumn, 1e-6);
   }
 });
@@ -809,4 +809,166 @@ test("upconvert/downconvert reject invalid inputs", () => {
   assertThrows(() => downconvert([]), Error, "non-empty");
   assertThrows(() => upconvert([1, 0], { sps: 0 }), Error, "sps must be a positive integer");
   assertThrows(() => downconvert([1], { sps: 1.5 }), Error, "sps must be a positive integer");
+});
+
+
+test("spectral options reject invalid segment sizes and overlaps", () => {
+  const signal = makeSineSignal(32);
+  const calls = [
+    (options) => welch(signal, options),
+    (options) => spectrogram(signal, options),
+    (options) => new SpectrogramStream(options),
+    (options) => new WelchStream({ ...options, segments: 1 })
+  ];
+  for (const call of calls) {
+    for (const nperseg of [1, 2.5, NaN, Infinity, '8', 2 ** 32 + 2]) {
+      assert.throws(() => call({ nperseg, nfft: 8 }), /nperseg/);
+    }
+    for (const nfft of [1, 8.5, NaN, Infinity, '8', 2 ** 32 + 8]) {
+      assert.throws(() => call({ nperseg: 8, nfft }), /power of 2/);
+    }
+  }
+  for (const call of calls.slice(0, 3)) {
+    for (const noverlap of [-1, 0.5, NaN, Infinity, '4']) {
+      assert.throws(() => call({ nperseg: 8, noverlap }), /noverlap/);
+    }
+  }
+});
+
+test("all entry points reject invalid sampling rates", () => {
+  const signal = makeSineSignal(32);
+  for (const fs of [0, -1, NaN, Infinity, '1000', null]) {
+    const options = { fs, nperseg: 8 };
+    for (const call of [
+      () => welch(signal, options), () => spectrogram(signal, options),
+      () => new SpectrogramStream(options), () => new WelchStream(options),
+      () => upconvert([1, 0], options), () => downconvert(signal, options)
+    ]) assert.throws(call, /fs must be finite and positive/);
+  }
+});
+
+test("streams reject invalid destinations without changing output or history", () => {
+  for (const Stream of [SpectrogramStream, WelchStream]) {
+    const options = { nperseg: 8, segments: 1, mode: 'psd' };
+    const stream = new Stream(options);
+    const reference = new Stream(options);
+    const chunk = makeSineSignal(stream.hop ?? stream.needed);
+    const first = new Float64Array(stream.numBins);
+    stream.process(chunk, first);
+    reference.process(chunk, new Float64Array(stream.numBins));
+    for (const out of [Array(stream.numBins + 2).fill(-123), new Float32Array(stream.numBins + 2).fill(-123), new Float64Array(stream.numBins + 2).fill(-123)]) {
+      const before = Array.from(out);
+      for (const offset of [-1, 0.5, NaN, Infinity, '0']) {
+        assert.throws(() => stream.process(chunk, out, offset), /offset/);
+        assert.deepEqual(Array.from(out), before);
+      }
+      assert.throws(() => stream.process(chunk, out, out.length), /Output must hold/);
+      assert.deepEqual(Array.from(out), before);
+    }
+    for (const out of [null, { length: 100 }, new Int16Array(100)]) {
+      assert.throws(() => stream.process(chunk, out), /Output must be/);
+    }
+    const actual = new Float64Array(stream.numBins);
+    const expected = new Float64Array(stream.numBins);
+    assert.equal(stream.process(chunk, actual), reference.process(chunk, expected));
+    assertArrayAlmostEquals(actual, expected);
+  }
+});
+
+test("custom windows validate normalization and preserve sign invariance", () => {
+  const signal = makeSineSignal(16);
+  const calls = [
+    (options) => welch(signal, options), (options) => spectrogram(signal, options),
+    (options) => new SpectrogramStream(options), (options) => new WelchStream(options)
+  ];
+  for (const call of calls) {
+    for (const window of [Array(8).fill(0), Array(8).fill(NaN), Array(8).fill(Infinity)]) {
+      assert.throws(() => call({ nperseg: 8, window }), /Window/);
+    }
+  }
+  const zeroSum = [1, -1, 1, -1, 1, -1, 1, -1];
+  assert.ok(welch(signal, { nperseg: 8, window: zeroSum }).psd.every(Number.isFinite));
+  for (const call of calls) {
+    assert.throws(() => call({ nperseg: 8, window: zeroSum, scaling: 'spectrum' }), /nonzero sum/);
+  }
+  assert.throws(() => spectrogram(signal, { nperseg: 8, window: zeroSum, mode: 'db' }), /nonzero sum/);
+  const tinySum = [1, -1, 0, 0, 0, 0, 0, 1e-200];
+  assert.throws(() => welch(signal, { nperseg: 8, window: tinySum, scaling: 'spectrum' }), /nonzero sum/);
+  for (const mode of ['psd', 'magnitude', 'db']) {
+    const options = { nperseg: 8, detrend: false, mode };
+    const positive = spectrogram(signal, { ...options, window: Array(8).fill(1) });
+    const negative = spectrogram(signal, { ...options, window: Array(8).fill(-1) });
+    assertMatrixAlmostEquals(positive.spectrogram, negative.spectrogram);
+  }
+});
+
+test("stream times use the first real sample as origin across overlap and reset", () => {
+  for (const noverlap of [0, 2, 4, 6, 7]) {
+    const stream = new SpectrogramStream({ nperseg: 8, noverlap, fs: 8 });
+    const out = new Float64Array(stream.numBins);
+    const chunk = Array(stream.hop).fill(1);
+    for (let i = 0; i < 3; i++) {
+      assertAlmostEquals(stream.process(chunk, out), (i * stream.hop + 4 - noverlap) / 8);
+    }
+    stream.reset();
+    assertAlmostEquals(stream.process(chunk, out), (4 - noverlap) / 8);
+  }
+});
+
+// Direct DFT provides a reference independent of the FFT and chirp convolution.
+function analyticDftReference(signal, fc, fs) {
+  const n = signal.length;
+  const spectrum = Array.from({ length: n }, (_, k) => {
+    let re = 0;
+    let im = 0;
+    for (let j = 0; j < n; j++) {
+      const phase = -2 * Math.PI * k * j / n;
+      re += signal[j] * Math.cos(phase);
+      im += signal[j] * Math.sin(phase);
+    }
+    const gain = k === 0 || (n % 2 === 0 && k === n / 2) ? 1 : (k < n / 2 ? 2 : 0);
+    return [re * gain, im * gain];
+  });
+  const out = new Float64Array(2 * n);
+  for (let j = 0; j < n; j++) {
+    let re = 0;
+    let im = 0;
+    for (let k = 0; k < n; k++) {
+      const phase = 2 * Math.PI * k * j / n;
+      re += spectrum[k][0] * Math.cos(phase) - spectrum[k][1] * Math.sin(phase);
+      im += spectrum[k][0] * Math.sin(phase) + spectrum[k][1] * Math.cos(phase);
+    }
+    const phase = -2 * Math.PI * fc * j / fs;
+    out[2 * j] = (re * Math.cos(phase) - im * Math.sin(phase)) / (n * Math.SQRT2);
+    out[2 * j + 1] = (re * Math.sin(phase) + im * Math.cos(phase)) / (n * Math.SQRT2);
+  }
+  return out;
+}
+
+test("downconvert matches an original-length DFT for odd, even and prime lengths", () => {
+  for (const n of [1, 2, 3, 6, 8, 15, 17, 32, 100, 257]) {
+    const signal = Float64Array.from({ length: n }, (_, i) => Math.cos(0.9 * i + 0.2) + 0.3 * Math.sin(0.13 * i));
+    for (const fc of [0, 2.3]) {
+      assertArrayAlmostEquals(downconvert(signal, { fc, fs: 100 }), analyticDftReference(signal, fc, 100), 1e-10);
+    }
+  }
+});
+
+test("downconvert preserves DC and even-length Nyquist without quadrature artifacts", () => {
+  for (const n of [1, 2, 3, 6, 15, 16, 17]) {
+    const signal = Array(n).fill(Math.SQRT2);
+    assertArrayAlmostEquals(downconvert(signal), signal.flatMap(() => [1, 0]));
+    if (n % 2 === 0) {
+      const nyquist = signal.map((value, i) => value * (-1) ** i);
+      assertArrayAlmostEquals(downconvert(nyquist), nyquist.flatMap((value) => [value / Math.SQRT2, 0]));
+    }
+  }
+});
+
+test("upconvert/downconvert round trips recover tones at arbitrary lengths", () => {
+  for (const n of [9, 10, 17, 31, 100, 257]) {
+    const baseband = Array.from({ length: n }, (_, i) => [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)]).flat();
+    const passband = upconvert(baseband, { fc: 3, fs: n });
+    assertArrayAlmostEquals(downconvert(passband, { fc: 3, fs: n }), baseband, 1e-10);
+  }
 });

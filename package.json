@@ -1,6 +1,6 @@
 {
   "name": "subnerodsp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Digital signal processing in JavaScript: Welch PSD, spectrograms, and baseband/passband conversion",
   "type": "module",
   "main": "src/dsp.js",

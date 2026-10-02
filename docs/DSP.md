@@ -2,7 +2,7 @@
 
 Full reference for every export of `subnerodsp`. For an introduction, installation and usage guidance, see the [README](../README.md).
 
-All functions accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays.
+All functions accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays. Sampling rates must be finite and positive. Spectral segment and FFT lengths must be integer powers of two, at least 2, within fft.js's supported range. Overlap must be a nonnegative integer smaller than the segment length. Custom windows must contain finite samples and have finite, positive energy. Spectrum scaling and spectrogram dB mode also require a finite, nonzero window sum.
 
 ## `welch(x, options)`
 
@@ -131,7 +131,7 @@ Computes a spectrogram one time slice (column) at a time from streaming input, w
 - `process(chunk, out, offset = 0)` → writes `numBins` values at `out[offset…]`, returns the time center (`number`) of this column
 - `reset()` → clears overlap history and restarts time indexing
 
-The first call to `process()` uses a zero-prefilled overlap buffer so one output column is returned immediately.
+The first call to `process()` uses a zero-prefilled overlap buffer so one output column is returned immediately. Time zero is the first real sample. Column centres are `(hopsProcessed * hop + nperseg / 2 - noverlap) / fs`, using the hop count before the call. The first centre can be negative when overlap exceeds half the window. `reset()` restores this time origin.
 
 **Example:**
 ```javascript
@@ -303,7 +303,7 @@ const result = welch(signal, {
 });
 ```
 
-Typed-array inputs are consumed directly. When the source signal is a typed array, overlapping segments are taken as typed-array views rather than copying the entire input into a plain array first.
+Typed-array inputs are read directly into reusable FFT work buffers. Both streaming `process()` methods require a nonnegative integer output offset and a destination with enough space for all bins. Destinations must be plain arrays, `Float32Array`, or `Float64Array`. Destination validation occurs before processing, so rejected destinations or offsets leave the output and spectrogram history unchanged.
 
 ## Important Notes
 
@@ -332,7 +332,7 @@ For `WelchStream`, `process()` throws if `samples.length < stream.needed` (`nper
 
 ### Analytic Signal Length
 
-`downconvert()` computes the analytic signal with fft.js, which requires a power-of-2 length. Signals of other lengths are zero-padded and truncated back. The real part is unaffected; the imaginary part differs slightly from an exact-length transform. For bit-exact agreement with SignalAnalysis.jl, use power-of-2 passband lengths.
+`downconvert()` computes the analytic signal at the original input length. Power-of-two lengths use fft.js directly; other lengths use Bluestein's chirp convolution with fft.js. The convolution uses padding internally without changing the signal's DFT length. Both paths take O(n log n) time, though arbitrary lengths need more work and temporary memory. As in SignalAnalysis.jl, the Hilbert transform assumes that the input block repeats periodically. Discontinuities between the end and beginning can cause boundary effects.
 
 ### Carrier Phase Precision
 

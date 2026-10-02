@@ -41,7 +41,7 @@ function sumSquaresArrayLike(values) {
  * @returns {boolean} True if n is a power of 2
  */
 function isPowerOf2(n) {
-  return n > 0 && (n & (n - 1)) === 0;
+  return Number.isInteger(n) && n >= 2 && n <= 2 ** 29 && (n & (n - 1)) === 0;
 }
 
 /**
@@ -54,6 +54,26 @@ function validatePowerOf2(nperseg) {
     throw new Error(
       `nperseg must be a power of 2 (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, etc.). Got ${nperseg}`
     );
+  }
+}
+
+/** Validates the input sampling rate. */
+function validateFs(fs) {
+  if (!Number.isFinite(fs) || fs <= 0) {
+    throw new Error(`fs must be finite and positive. Got ${fs}`);
+  }
+}
+
+/** Validates a destination before a stream reads or advances its history. */
+function validateOutput(out, offset, numBins) {
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error(`offset must be a nonnegative integer. Got ${offset}`);
+  }
+  if (!(Array.isArray(out) || out instanceof Float32Array || out instanceof Float64Array)) {
+    throw new Error('Output must be an array, Float32Array, or Float64Array');
+  }
+  if (out.length < offset + numBins) {
+    throw new Error(`Output must hold ${numBins} values at offset ${offset}`);
   }
 }
 
@@ -166,6 +186,7 @@ function createDspState({
   scaling = 'density',
   mode = 'psd'
 } = {}) {
+  validateFs(fs);
   validatePowerOf2(nperseg);
   validateSpectrogramMode(mode);
   validateScaling(scaling);
@@ -188,7 +209,21 @@ function createDspState({
     throw new Error(`noverlap (${noverlap}) must be < nperseg (${nperseg})`);
   }
 
+  if (!Number.isInteger(noverlap) || noverlap < 0) {
+    throw new Error(`noverlap (${noverlap}) must be a nonnegative integer`);
+  }
+
   const windowArray = resolveWindow(window, nperseg);
+  const windowSumSquares = sumSquaresArrayLike(windowArray);
+  const windowSum = sumArrayLike(windowArray);
+  if (!windowArray.every(Number.isFinite) || !Number.isFinite(windowSumSquares) || windowSumSquares <= 0) {
+    throw new Error('Window must contain finite samples and have finite, positive energy');
+  }
+  const windowNormalization = mode === 'db' ? Math.abs(windowSum) : windowSum * windowSum;
+  if ((mode === 'db' || (mode === 'psd' && scaling === 'spectrum')) &&
+      (!Number.isFinite(windowNormalization) || windowNormalization <= 0)) {
+    throw new Error('Window must have a finite, nonzero sum for this normalization');
+  }
   const fft = new FFT(nfft);
   const numFreqs = Math.floor(nfft / 2) + 1;
 
@@ -205,8 +240,8 @@ function createDspState({
     fft,
     numFreqs,
     frequencies: getFrequencies(nfft, fs),
-    windowSumSquares: sumSquaresArrayLike(windowArray),
-    windowSum: sumArrayLike(windowArray),
+    windowSumSquares,
+    windowSum,
     // Work buffers, reused across calls. The [nperseg, nfft) tail of fftInput
     // stays zero (zero-padding) because only [0, nperseg) is ever written.
     fftInput: new Float64Array(nfft),
@@ -269,8 +304,8 @@ function scaleInto(state, magSq, out, offset = 0) {
       value = Math.sqrt(magSq[i]) / Math.sqrt(windowSumSquares * fs);
     } else if (state.mode === 'db') {
       // Amplitude spectrum in dB. Equals the legacy display-dB conversion
-      // 20*log10(magnitudeMode * sqrt(windowSumSquares * fs) * 2 / windowSum).
-      value = 20 * Math.log10((Math.sqrt(magSq[i]) * 2) / windowSum + state.dbEps);
+      // 20*log10(magnitudeMode * sqrt(windowSumSquares * fs) * 2 / abs(windowSum)).
+      value = 20 * Math.log10((Math.sqrt(magSq[i]) * 2) / Math.abs(windowSum) + state.dbEps);
     } else {
       value = magSq[i];
 
@@ -358,9 +393,7 @@ export class SpectrogramStream {
       throw new Error(`Input chunk length (${chunk.length}) must equal hop (${this.hop})`);
     }
 
-    if (!out || out.length < offset + this.numBins) {
-      throw new Error(`Output must hold ${this.numBins} values at offset ${offset}`);
-    }
+    validateOutput(out, offset, this.numBins);
 
     this._segment.copyWithin(0, this.hop);
     this._segment.set(chunk, this.noverlap);
@@ -368,7 +401,7 @@ export class SpectrogramStream {
     magSqInto(this._state, this._segment, 0);
     scaleInto(this._state, this._state.magSq, out, offset);
 
-    const time = (this.hopsProcessed * this.hop + this.nperseg / 2) / this.fs;
+    const time = (this.hopsProcessed * this.hop + this.nperseg / 2 - this.noverlap) / this.fs;
     this.hopsProcessed += 1;
 
     return time;
@@ -446,9 +479,7 @@ export class WelchStream {
       );
     }
 
-    if (!out || out.length < offset + this.numBins) {
-      throw new Error(`Output must hold ${this.numBins} values at offset ${offset}`);
-    }
+    validateOutput(out, offset, this.numBins);
 
     const state = this._state;
     const { numFreqs, magSq, magSqSum } = state;
@@ -689,51 +720,89 @@ function rrcosfir(beta, sps) {
 }
 
 /**
- * Computes the analytic signal of a real signal: hilbert(x) / sqrt(2).
- * Matches SignalAnalysis.jl's analytic(), whose 1/sqrt(2) scaling undoes the
- * sqrt(2) applied by upconvert().
- *
- * fft.js needs a power-of-2 length, so shorter signals are zero-padded
- * and truncated back. The real part stays exact; for non-power-of-2 lengths the
- * imaginary part differs slightly from an exact-length FFT (different wraparound).
- *
+ * Transforms an interleaved complex signal at its original length.
+ * Bluestein's chirp convolution handles lengths unsupported by fft.js in O(n log n).
+ * Padding is confined to the convolution and does not change the DFT length.
+ */
+function complexTransform(input, inverse = false) {
+  const n = input.length / 2;
+  if (n === 1) return Float64Array.from(input);
+  if (isPowerOf2(n)) {
+    const fft = new FFT(n);
+    const out = fft.createComplexArray();
+    if (inverse) fft.inverseTransform(out, input);
+    else fft.transform(out, input);
+    return out;
+  }
+
+  let size = 2;
+  while (size < 2 * n - 1) size *= 2;
+  validatePowerOf2(size);
+  const fft = new FFT(size);
+  const a = fft.createComplexArray();
+  const b = fft.createComplexArray();
+  const sign = inverse ? 1 : -1;
+
+  // exp(sign*i*pi*j²/n) factors the DFT into a circular convolution.
+  for (let j = 0; j < n; j++) {
+    const phase = sign * Math.PI * ((j * j) % (2 * n)) / n;
+    const re = Math.cos(phase);
+    const im = Math.sin(phase);
+    a[2 * j] = input[2 * j] * re - input[2 * j + 1] * im;
+    a[2 * j + 1] = input[2 * j] * im + input[2 * j + 1] * re;
+    b[2 * j] = re;
+    b[2 * j + 1] = -im;
+    if (j > 0) {
+      b[2 * (size - j)] = re;
+      b[2 * (size - j) + 1] = -im;
+    }
+  }
+
+  const aSpectrum = fft.createComplexArray();
+  const bSpectrum = fft.createComplexArray();
+  fft.transform(aSpectrum, a);
+  fft.transform(bSpectrum, b);
+  for (let j = 0; j < size; j++) {
+    const re = aSpectrum[2 * j];
+    const im = aSpectrum[2 * j + 1];
+    aSpectrum[2 * j] = re * bSpectrum[2 * j] - im * bSpectrum[2 * j + 1];
+    aSpectrum[2 * j + 1] = re * bSpectrum[2 * j + 1] + im * bSpectrum[2 * j];
+  }
+  fft.inverseTransform(a, aSpectrum);
+
+  const out = new Float64Array(2 * n);
+  const scale = inverse ? n : 1;
+  for (let j = 0; j < n; j++) {
+    const phase = sign * Math.PI * ((j * j) % (2 * n)) / n;
+    const re = Math.cos(phase);
+    const im = Math.sin(phase);
+    out[2 * j] = (a[2 * j] * re - a[2 * j + 1] * im) / scale;
+    out[2 * j + 1] = (a[2 * j] * im + a[2 * j + 1] * re) / scale;
+  }
+  return out;
+}
+
+/**
+ * Computes hilbert(x) / sqrt(2) using the original signal length.
+ * Matches SignalAnalysis.jl's analytic() scaling and periodic boundary assumption.
  * @param {ArrayLike<number>} x - Real input signal
  * @returns {Float64Array} Interleaved complex analytic signal, length 2*x.length
  */
 function analytic(x) {
   const n = x.length;
-  let nfft = 2;
-  while (nfft < n) nfft *= 2;
+  const input = new Float64Array(2 * n);
+  for (let i = 0; i < n; i++) input[2 * i] = x[i];
+  const spectrum = complexTransform(input);
 
-  const fft = new FFT(nfft);
-  const input = new Float64Array(nfft);
-  for (let i = 0; i < n; i++) {
-    input[i] = x[i];
+  // Keep DC and even-length Nyquist, double positives, and remove negatives.
+  for (let i = 1; i < n; i++) {
+    const gain = i <= Math.floor((n - 1) / 2) ? 2 : (n % 2 === 0 && i === n / 2 ? 1 : 0);
+    spectrum[2 * i] *= gain;
+    spectrum[2 * i + 1] *= gain;
   }
-
-  const spectrum = fft.createComplexArray();
-  fft.realTransform(spectrum, input);
-  fft.completeSpectrum(spectrum);
-
-  // One-sided spectrum: double the positive frequencies, zero the negative ones.
-  // DC and Nyquist are left untouched.
-  for (let i = 1; i < nfft / 2; i++) {
-    spectrum[2 * i] *= 2;
-    spectrum[2 * i + 1] *= 2;
-  }
-  for (let i = nfft / 2 + 1; i < nfft; i++) {
-    spectrum[2 * i] = 0;
-    spectrum[2 * i + 1] = 0;
-  }
-
-  const timeDomain = fft.createComplexArray();
-  fft.inverseTransform(timeDomain, spectrum);
-
+  const timeDomain = complexTransform(spectrum, true);
   const out = new Float64Array(2 * n);
-  for (let i = 0; i < 2 * n; i++) {
-    out[i] = timeDomain[i] / Math.SQRT2;
-  }
-
+  for (let i = 0; i < 2 * n; i++) out[i] = timeDomain[i] / Math.SQRT2;
   return out;
 }
 
@@ -833,6 +902,7 @@ export function upconvert(x, { sps = 1, fc = 0, fs = 1.0 } = {}) {
   }
 
   validateSps(sps);
+  validateFs(fs);
 
   let s = x;
 
@@ -883,6 +953,7 @@ export function downconvert(x, { sps = 1, fc = 0, fs = 1.0 } = {}) {
   }
 
   validateSps(sps);
+  validateFs(fs);
 
   const s = analytic(x);
 

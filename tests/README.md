@@ -148,5 +148,4 @@ fixtures run the same algorithm with a `Float64` time axis and are compared stri
 raw library output is compared loosely (1e-4). Everything else — the `rrcosfir` pulse shape,
 DSP.jl's `resample`, and the Hilbert transform — is the library's own output.
 
-Passband lengths are powers of 2 so the FFT-based analytic signal needs no zero-padding and
-matches Julia exactly.
+The stored Julia fixtures use power-of-two passband lengths. The unit suite also checks arbitrary-length downconversion against an independent direct DFT, verifies DC and even-length Nyquist handling, and tests tone round trips at odd, even, and prime lengths. These checks do not require regenerating the Julia fixtures.
