@@ -1,30 +1,10 @@
-# DSP Functions for JavaScript
+# API reference
 
-This module provides digital signal processing functions for computing power spectral density (PSD) and spectrograms of real-valued signals, designed for web-based audio analysis and visualization.
+Full reference for every export of `subnerodsp`. For an introduction, installation and usage guidance, see the [README](../README.md).
 
-The DSP APIs accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays.
+All functions accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays.
 
-## Features
-
-- **Welch's Method** - Robust power spectral density estimation with overlapping segments
-- **Spectrogram** - Time-frequency analysis using short-time Fourier transform (STFT)
-- **Up/downconversion** - Complex baseband ↔ real passband, matching SignalAnalysis.jl
-- **Streaming, allocation-free API** - `WelchStream` and `SpectrogramStream` are the streaming counterparts of `welch()` and `spectrogram()`: construct once, then `.process()` writes into caller-supplied buffers with no allocation, for hot paths like Web Workers
-- **Built on fft.js** - Fast FFT implementation optimized for JavaScript
-- **Simple API** - Inspired by scipy.signal for ease of use
-- **Custom Windows** - Support for built-in and user-defined window functions
-
-## Installation
-
-```bash
-pnpm install
-```
-
-The module requires `fft.js` for FFT computation.
-
-## API Reference
-
-### `welch(x, options)`
+## `welch(x, options)`
 
 Computes the Power Spectral Density using Welch's method.
 
@@ -56,11 +36,11 @@ console.log(result.frequencies); // Frequency bins
 console.log(result.psd);         // Power spectral density
 ```
 
-### `new WelchStream(options)`
+## `new WelchStream(options)`
 
 Computes a Welch PSD one estimate at a time from a caller-owned buffer (e.g. a ring buffer), writing directly into a caller-supplied `Float32Array`, `Float64Array`, or `number[]`. Allocation-free after construction. The streaming counterpart of `welch()`, sharing the same `mode` choices as `SpectrogramStream`.
 
-Unlike `welch()`, this is **strict**: it does not clamp `nperseg` to fit short input, and it always uses the **most recent** samples (the tail of the input) rather than every segment that fits — matching a live/streaming PSD.
+It always uses the **most recent** samples (the tail of the input) rather than every segment that fits, which matches a live PSD. `process()` throws if the input is shorter than `needed`.
 
 **Parameters:**
 - `options` (Object):
@@ -95,7 +75,7 @@ stream.process(samples, out);
 // out now holds dB values; call again each time new samples arrive — no allocation
 ```
 
-### `spectrogram(x, options)`
+## `spectrogram(x, options)`
 
 Computes the spectrogram using short-time Fourier transform.
 
@@ -133,7 +113,7 @@ console.log(result.times);        // Time bins [t0, t1, t2, ...]
 console.log(result.spectrogram);  // 2D array [freq][time]
 ```
 
-### `new SpectrogramStream(options)`
+## `new SpectrogramStream(options)`
 
 Computes a spectrogram one time slice (column) at a time from streaming input, writing each column into a caller-supplied buffer. Allocation-free after construction — the FFT, window, and sliding segment buffers are all allocated once. The streaming counterpart of `spectrogram()`.
 
@@ -173,7 +153,7 @@ for (let offset = 0; offset + stream.hop <= signal.length; offset += stream.hop)
 }
 ```
 
-### `upconvert(x, options)`
+## `upconvert(x, options)`
 
 Converts a complex baseband signal to a real passband signal centered at carrier frequency `fc`. Port of [SignalAnalysis.jl](https://github.com/org-arl/SignalAnalysis.jl)'s `upconvert()`.
 
@@ -198,7 +178,7 @@ const baseband = [1, 0, 0, 1, -1, 0];
 const passband = upconvert(baseband, { sps: 4, fc: 12000, fs: 8000 });
 ```
 
-### `downconvert(x, options)`
+## `downconvert(x, options)`
 
 Converts a real passband signal centered at `fc` back to complex baseband. Port of SignalAnalysis.jl's `downconvert()`.
 
@@ -348,7 +328,7 @@ chunk.length === nperseg - noverlap
 
 This strict contract keeps the API deterministic: one chunk in, one column written out.
 
-`WelchStream` has a different strictness: it never clamps `nperseg` to fit short input (unlike `welch()`) — `process()` throws if `samples.length < stream.needed` (`nperseg + (segments-1)*nperseg/2`). Callers that need short-input clamping must do it themselves before calling.
+For `WelchStream`, `process()` throws if `samples.length < stream.needed` (`nperseg + (segments-1)*nperseg/2`). Only the most recent `needed` samples are used.
 
 ### Analytic Signal Length
 
@@ -363,26 +343,6 @@ SignalAnalysis.jl stores its frame rate as `Float32`, so its carrier phase axis 
 - **'density'** (default): Returns power spectral density in V²/Hz units
 - **'spectrum'**: Returns power spectrum in V² units
 
-## Testing
-
-Run the test suite:
-
-```bash
-pnpm test:dsp
-```
-
-Validate `upconvert`/`downconvert` against SignalAnalysis.jl reference data (requires Julia to regenerate, see `tests/README.md`):
-
-```bash
-pnpm test:julia
-```
-
-Run the demo:
-
-```bash
-pnpm demo:dsp
-```
-
 ## Implementation Details
 
 - Uses `realTransform` from fft.js for ~40% faster FFT on real signals
@@ -396,12 +356,9 @@ pnpm demo:dsp
 
 ## Limitations (Simplified from SciPy)
 
-- Only Hann window built-in (custom windows supported via array)
-- Only 'constant' detrending (remove mean) implemented
+- Only the Hann window is built in (custom windows supported via array)
+- Only 'constant' detrending (remove mean) is implemented; any other `detrend` value disables detrending
 - No multi-dimensional array support (1D signals only)
 - Always returns one-sided spectrum (real input assumption)
 - `upconvert`/`downconvert` use a fixed root raised cosine pulse shape (β = 0.25); the pulse shape is not configurable, and only integer `sps` is supported
 
-## License
-
-MIT

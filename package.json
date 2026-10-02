@@ -39,5 +39,8 @@
   "homepage": "https://github.com/subnero1/subnerodsp.js#readme",
   "dependencies": {
     "fft.js": "^4.0.4"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

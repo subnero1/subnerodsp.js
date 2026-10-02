@@ -1,274 +1,177 @@
 # subnerodsp.js
 
-Digital signal processing functions for computing power spectral density and spectrograms of real-valued audio signals, optimized for web-based visualization, plus baseband/passband conversion ported from [SignalAnalysis.jl](https://github.com/org-arl/SignalAnalysis.jl).
-These APIs accept plain JavaScript arrays and numeric typed arrays such as `Float32Array` and `Float64Array`.
+Spectral analysis and baseband/passband conversion for JavaScript, in the browser and in Node.js.
+
+- **Welch PSD** and **spectrograms**, numerically matched to `scipy.signal`
+- **Streaming, allocation-free** versions of both, for live displays, Web Workers and audio callbacks
+- **Upconversion and downconversion** between complex baseband and real passband, ported from [SignalAnalysis.jl](https://github.com/org-arl/SignalAnalysis.jl)
+- Accepts plain arrays and any numeric typed array (`Float32Array`, `Float64Array`, `Int16Array`, ...)
+- Pure ES modules with a single dependency, [fft.js](https://github.com/indutny/fft.js)
 
 ## Installation
 
+Install from GitHub with any package manager:
+
 ```bash
-pnpm add subnerodsp
+pnpm add github:subnero1/subnerodsp.js#v1.0.0
+# or
+npm install github:subnero1/subnerodsp.js#v1.0.0
 ```
 
-## Quick Start
+Everything is exported from the package root:
 
 ```javascript
-import { welch, WelchStream, spectrogram, SpectrogramStream } from 'subnerodsp';
-
-// Generate a test signal
-const fs = 1000; // 1 kHz sampling rate
-const signal = Float32Array.from({ length: 2000 }, (_, i) =>
-  Math.sin(2 * Math.PI * 100 * i / fs)
-);
-
-// Compute power spectral density
-const psd = welch(signal, { fs, nperseg: 512 });
-console.log(psd.frequencies); // Frequency bins
-console.log(psd.psd);         // Power values
-
-// Streaming PSD: write directly into a caller-owned buffer, no allocation
-// after construction
-const welchStream = new WelchStream({ fs, nperseg: 1024, nfft: 2048, segments: 8 });
-const psdOut = new Float32Array(welchStream.numBins);
-welchStream.process(signal, psdOut); // dB by default
-
-// Compute spectrogram
-const spec = spectrogram(signal, { fs, nperseg: 256, mode: 'magnitude' });
-console.log(spec.frequencies);  // Frequency bins
-console.log(spec.times);        // Time bins
-console.log(spec.spectrogram);  // 2D array [freq][time]
-
-// Streaming spectrogram: one column (in dB) per hop into a caller-owned buffer
-const specStream = new SpectrogramStream({ fs, nperseg: 256, noverlap: 128 });
-const columnOut = new Float32Array(specStream.numBins);
-const chunk = signal.slice(0, specStream.hop);
-const time = specStream.process(chunk, columnOut);
-console.log(time);       // Center time of this column
-console.log(columnOut);  // 1D array across frequencies
+import { welch, spectrogram, WelchStream, SpectrogramStream, upconvert, downconvert } from 'subnerodsp';
 ```
 
-`WelchStream` and `SpectrogramStream` are the allocation-free, streaming counterparts of `welch()` and `spectrogram()` respectively — same option names, same `mode` choices (`'psd'`, `'magnitude'`, `'db'`), constructed once and reused via `.process()`.
+Requires an ES module environment: Node.js 18 or later, or any modern browser via a bundler such as Vite.
 
-## Functions
+## Quick start
 
-### `welch(signal, options)`
-
-Estimates power spectral density using Welch's method with overlapping segments.
-
-**Parameters:**
-- `signal` (number[] | TypedArray): Input signal (real-valued)
-- `options` (Object):
-  - `fs` (number, default: 1.0): Sampling frequency in Hz
-  - `window` (string | number[] | TypedArray, default: 'hann'): Window type or custom array
-  - `nperseg` (number, default: 256): Segment length (must be power of 2)
-  - `noverlap` (number, default: nperseg/2): Overlap between segments
-  - `nfft` (number, default: nperseg): FFT length (power of 2, >= nperseg)
-  - `detrend` (string | boolean, default: 'constant'): Detrend type
-  - `scaling` (string, default: 'density'): 'density' or 'spectrum'
-
-**Returns:** `{frequencies: number[], psd: number[]}`
-
-### `new WelchStream(options)`
-
-Computes a Welch PSD one estimate at a time from a caller-owned buffer (e.g. a ring buffer), writing into a caller-supplied array. Allocation-free after construction. Strict: unlike `welch()`, it does not clamp `nperseg` to fit short input — callers must ensure enough samples. Always reads the **most recent** samples (the tail of the input), so it fits a live/streaming PSD.
-
-**Parameters:**
-- `options` (Object):
-  - `fs` (number, default: 1.0): Sampling frequency in Hz
-  - `window` (string | number[] | TypedArray, default: 'hann'): Window type or custom array
-  - `nperseg` (number, default: 1024): Segment length (power of 2)
-  - `nfft` (number, default: nperseg): FFT length (power of 2, >= nperseg)
-  - `segments` (number, default: 8): Number of 50%-overlapped segments to average
-  - `detrend` (string | boolean, default: 'constant'): Detrend type
-  - `scaling` (string, default: 'density'): 'density' or 'spectrum' (mode 'psd' only)
-  - `mode` (string, default: 'db'): 'db', 'magnitude' or 'psd'
-  - `dbEps` (number, default: 1e-20): Power floor added before `10*log10` (mode 'db' only)
-
-**Properties and methods:**
-- `numBins` - Number of frequency bins written per call, equal to `nfft/2 + 1`
-- `needed` - Minimum input length required by `process()`, equal to `nperseg + (segments-1)*nperseg/2`
-- `frequencies` - Cached frequency bins
-- `windowSum` / `windowSumSquares` - Window normalization constants
-- `process(samples, out, offset = 0)` - Writes `numBins` values at `out[offset…]`, returns bins written (`numBins`)
-
-### `spectrogram(signal, options)`
-
-Computes time-frequency representation using short-time Fourier transform (STFT).
-
-**Parameters:**
-- Same as `welch()`, plus:
-  - `noverlap` (default: nperseg/8 for spectrograms)
-  - `mode` (string, default: 'psd'): Output mode ('psd', 'magnitude' or 'db')
-  - `dbEps` (number, default: 1e-12): Amplitude floor added before `log10` (mode 'db' only)
-
-**Returns:** `{frequencies: number[], times: number[], spectrogram: number[][]}`
-
-### `new SpectrogramStream(options)`
-
-Computes one spectrogram time slice (column) at a time from a fixed-size input stream, writing each column into a caller-supplied buffer. Allocation-free after construction.
-
-**Parameters:**
-- Same options as `spectrogram()`, but `mode` defaults to `'db'`
-
-**Properties and methods:**
-- `hop` - Required input chunk length for each `process()` call, equal to `nperseg - noverlap`
-- `numBins` - Number of frequency bins written per column
-- `frequencies` - Cached frequency bins for all returned columns
-- `windowSum` / `windowSumSquares` - Window normalization constants, exposed for callers doing their own scaling
-- `process(chunk, out, offset = 0)` - Writes `numBins` values at `out[offset…]` and returns the time center (a number) of this column
-- `reset()` - Clears internal overlap history and restarts time indexing
-
-The first `process()` call uses a zero-prefilled overlap buffer so the stream returns one column immediately.
-
-### `upconvert(x, options)`
-
-Converts a complex baseband signal to a real passband signal centered at carrier frequency `fc`. Baseband signals are interleaved complex (`[I0, Q0, I1, Q1, ...]`); passband signals are plain real arrays.
-
-**Parameters:**
-- `x` - Baseband signal, interleaved complex (even length)
-- `sps` (number, default: 1) - Passband samples per baseband sample; positive integer
-- `fc` (number, default: 0) - Carrier frequency, same units as `fs`
-- `fs` (number, default: 1.0) - Baseband sampling frequency; output rate is `sps * fs`
-
-**Returns:** `Float64Array` - the real passband signal
-
-When `sps > 1` the signal is interpolated with a root raised cosine pulse shape (β = 0.25), which adds 11 baseband samples of filter transient on each side, so the output length is `(x.length / 2 + 22) * sps`.
-
-### `downconvert(x, options)`
-
-Converts a real passband signal centered at `fc` back to complex baseband, removing the negative frequency image via the analytic signal, then matched-filtering and decimating when `sps > 1`.
-
-**Parameters:**
-- `x` - Real passband signal
-- `sps` (number, default: 1) - Passband samples per baseband sample; positive integer
-- `fc` (number, default: 0) - Carrier frequency, same units as `fs`
-- `fs` (number, default: 1.0) - Passband sampling frequency; output rate is `fs / sps`
-
-**Returns:** `Float64Array` - baseband signal, interleaved complex, length `2 * ceil(x.length / sps)`
-
-## Examples
-
-**Detect peak frequency**
 ```javascript
-const { frequencies, psd } = welch(signal, { fs: 1000, nperseg: 1024 });
-const peakIdx = psd.indexOf(Math.max(...psd));
-console.log(`Peak at ${frequencies[peakIdx].toFixed(2)} Hz`);
+import { welch, spectrogram } from 'subnerodsp';
+
+// 2 seconds of a 100 Hz tone sampled at 1 kHz
+const fs = 1000;
+const signal = Float32Array.from({ length: 2 * fs }, (_, i) => Math.sin(2 * Math.PI * 100 * i / fs));
+
+// Power spectral density
+const { frequencies, psd } = welch(signal, { fs, nperseg: 512 });
+const peak = psd.indexOf(Math.max(...psd));
+console.log(`Peak at ${frequencies[peak].toFixed(1)} Hz`); // Peak at 99.6 Hz
+
+// Spectrogram in dB, indexed as spec[frequency][time]
+const { times, spectrogram: spec } = spectrogram(signal, { fs, nperseg: 256, mode: 'db' });
 ```
 
-**Baseband to passband and back**
-```javascript
-import { upconvert, downconvert } from 'subnerodsp';
+## API at a glance
 
-// 3 complex baseband samples, 4 passband samples per baseband sample
-const baseband = [1, 0, 0, 1, -1, 0];
-const passband = upconvert(baseband, { sps: 4, fc: 12000, fs: 8000 });
+| Export | Use it for | Output |
+|---|---|---|
+| `welch(x, options)` | PSD of a whole signal | `{ frequencies, psd }` as plain arrays |
+| `spectrogram(x, options)` | Time-frequency view of a whole signal | `{ frequencies, times, spectrogram }`, with `spectrogram[f][t]` |
+| `new WelchStream(options)` | Live PSD of the most recent samples in a buffer | Writes `numBins` values into your array |
+| `new SpectrogramStream(options)` | Live spectrogram, one column per chunk | Writes `numBins` values into your array, returns the column time |
+| `upconvert(x, options)` | Complex baseband to real passband | `Float64Array` |
+| `downconvert(x, options)` | Real passband to complex baseband | `Float64Array`, interleaved complex |
 
-// Back to baseband at the passband rate of sps * fs
-const recovered = downconvert(passband, { sps: 4, fc: 12000, fs: 32000 });
-```
+Every option, default and property is documented in the [API reference](docs/DSP.md).
 
-**Custom Hamming window**
-```javascript
-const nperseg = 512;
-const window = new Array(nperseg).fill(0).map((_, n) =>
-  0.54 - 0.46 * Math.cos(2 * Math.PI * n / (nperseg - 1))
-);
+### Common options
 
-const result = welch(signal, { fs: 1000, window, nperseg });
-```
+| Option | Default | Meaning |
+|---|---|---|
+| `fs` | `1.0` | Sampling rate. Frequencies and times come back in matching units (Hz and seconds if `fs` is in Hz). |
+| `nperseg` | `256` (`1024` for `WelchStream`) | Segment length. Must be a power of 2 and no longer than the signal. |
+| `noverlap` | `nperseg/2` (Welch), `nperseg/8` (spectrogram) | Samples shared by neighbouring segments. |
+| `nfft` | `nperseg` | FFT length. A power of 2, at least `nperseg`. Larger values zero-pad for a smoother-looking spectrum. |
+| `window` | `'hann'` | `'hann'`, or your own array of length `nperseg`. |
+| `detrend` | `'constant'` | `'constant'` removes each segment's mean. Any other value, such as `false`, disables detrending. |
+| `scaling` | `'density'` | `'density'` gives V²/Hz, `'spectrum'` gives V². Applies to `mode: 'psd'`. |
+| `mode` | `'psd'` (`'db'` for the streams) | `'psd'`, `'magnitude'` or `'db'`. Not available on `welch()`. |
 
-Typed-array inputs are processed directly. When the source signal is a typed array, segment extraction uses typed-array views instead of first converting the full signal into a plain array.
+## Choosing parameters
 
-**Time-frequency chirp analysis**
-```javascript
-// Generate chirp: frequency increases over time
-const signal = new Array(2000).fill(0).map((_, i) => {
-  const t = i / 1000;
-  return Math.sin(2 * Math.PI * (50 + 200 * t) * t);
-});
+The segment length trades frequency resolution against time resolution and variance:
 
-const { frequencies, times, spectrogram: spec } = spectrogram(signal, {
-  fs: 1000,
-  nperseg: 256,
-  mode: 'magnitude'
-});
+- **Bin spacing** is `fs / nfft`. Raising `nfft` above `nperseg` interpolates the spectrum but does not separate closer tones.
+- **Frequency resolution** is roughly `2 * fs / nperseg` with the Hann window. To tell apart two tones `Δf` apart, use `nperseg ≥ 2 * fs / Δf`.
+- **Spectrogram time step** is `(nperseg - noverlap) / fs` seconds per column.
+- **Welch variance** drops as more segments are averaged. For a fixed signal length, a shorter `nperseg` gives a smoother but coarser PSD.
 
-// spec[f][t] shows energy distribution over time and frequency
-```
+For example, at `fs = 48000` with `nperseg = 1024`, bins are 46.9 Hz apart, and a spectrogram with `noverlap = 512` produces a column every 10.7 ms.
 
-**Streaming spectrogram**
+## Streaming
+
+`WelchStream` and `SpectrogramStream` take the same options as `welch()` and `spectrogram()`. You construct them once, then call `process()` repeatedly. They allocate nothing after construction and write into an array you own, so they suit render loops and audio callbacks.
+
+**Live spectrogram (waterfall).** Feed exactly `stream.hop` new samples per call and get one column back:
+
 ```javascript
 import { SpectrogramStream } from 'subnerodsp';
 
-const fs = 1000;
-const stream = new SpectrogramStream({
-  fs,
-  nperseg: 256,
-  noverlap: 128,
-  mode: 'magnitude'
-});
-const columnOut = new Float32Array(stream.numBins);
+const stream = new SpectrogramStream({ fs: 48000, nperseg: 1024, noverlap: 512 }); // dB by default
+const column = new Float32Array(stream.numBins);
 
-for (let offset = 0; offset + stream.hop <= signal.length; offset += stream.hop) {
-  const chunk = signal.slice(offset, offset + stream.hop);
-  const time = stream.process(chunk, columnOut);
-  console.log(time, columnOut[0]);
+function onSamples(chunk) {                 // chunk.length === stream.hop (512 here)
+  const t = stream.process(chunk, column);  // centre time of this column, in seconds
+  drawColumn(t, column);                    // column[i] is the level at stream.frequencies[i]
 }
 ```
 
-**Streaming PSD**
+The first column is computed against zero-filled history, so output starts immediately. Call `stream.reset()` to start a new recording.
+
+**Live PSD.** Keep the latest samples in a buffer and estimate from its tail:
+
 ```javascript
 import { WelchStream } from 'subnerodsp';
 
-const fs = 1000;
-const stream = new WelchStream({ fs, nperseg: 1024, nfft: 2048, segments: 8 });
+const stream = new WelchStream({ fs: 48000, nperseg: 1024, segments: 8 }); // dB by default
 const out = new Float32Array(stream.numBins);
-stream.process(signal, out);
-console.log(out); // dB values, most-recent-samples PSD estimate
+
+// buffer must hold at least stream.needed samples; the most recent ones are used
+stream.process(buffer, out);
 ```
 
-## Important Notes
+`WelchStream` averages `segments` half-overlapped segments, so it needs `stream.needed = nperseg + (segments - 1) * nperseg / 2` samples and throws if given fewer. Both streams take an optional `offset` argument to `process()`, to write into one row of a larger array.
 
-- **Power-of-2 requirement**: `nperseg` and `nfft` must be powers of 2 (2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, etc.) due to FFT.js requirements
-- **Overlap recommendations**:
-  - Welch: 50% overlap (nperseg/2) optimal for Hann window
-  - Spectrogram: 12.5% overlap (nperseg/8) for statistical independence
-- **Streaming chunk contract**: `SpectrogramStream.process(chunk, out)` requires exactly `nperseg - noverlap` samples and writes exactly one new column
-- **`WelchStream` is strict**: unlike `welch()`, it does not clamp `nperseg` to fit short input — `process()` throws if `samples.length` is below `nperseg + (segments-1)*nperseg/2` (exposed as `stream.needed`)
-- **Streaming startup behavior**: The first streaming column is computed with zero-prefilled history for the missing overlap samples
-- **Scaling**: 'density' returns V²/Hz, 'spectrum' returns V²
-- **One-sided spectrum**: Always returned for real-valued inputs (DC to Nyquist)
-- **Pulse shaping**: `upconvert`/`downconvert` always use a root raised cosine pulse shape with β = 0.25 (the SignalAnalysis.jl default) and integer `sps` only
-- **Analytic signal length**: `downconvert` zero-pads to a power-of-2 length for the FFT; use power-of-2 passband lengths for exact agreement with SignalAnalysis.jl
+### Output modes and dB
 
-For complete documentation, see [docs/DSP.md](docs/DSP.md).
+| `mode` | Value per bin |
+|---|---|
+| `'psd'` | Power, scaled by `scaling` (V²/Hz or V²) |
+| `'magnitude'` | Amplitude spectral density, `|X| / √(fs · Σw²)` |
+| `'db'` in `spectrogram` / `SpectrogramStream` | Amplitude spectrum in dB, `20·log10(2·|X| / Σw + dbEps)`. A full-scale sine reads close to 0 dB. |
+| `'db'` in `WelchStream` | Power spectral density in dB, `10·log10(psd + dbEps)` |
 
-## Testing
+Here `X` is the FFT of the windowed segment and `w` is the window. `dbEps` sets the floor that silent bins settle at. It defaults to `1e-12` for spectrograms and `1e-20` for `WelchStream`.
 
-Run all tests:
+## Baseband and passband
+
+Baseband signals are complex and stored **interleaved**: `[I0, Q0, I1, Q1, ...]`. Passband signals are real.
+
+```javascript
+import { upconvert, downconvert } from 'subnerodsp';
+
+const baseband = [1, 0, 0, 1, -1, 0];    // 3 complex samples: 1, j, -1
+const fs = 8000;                          // baseband sample rate
+const sps = 4;                            // passband samples per baseband sample
+
+const passband = upconvert(baseband, { sps, fc: 12000, fs });              // sampled at sps * fs = 32 kHz
+const recovered = downconvert(passband, { sps, fc: 12000, fs: sps * fs }); // back to 8 kHz baseband
+```
+
+In both functions `fs` is the rate of the **input** signal. With `sps > 1` both apply a root raised cosine filter (β = 0.25). `upconvert` adds 11 baseband samples of filter transient on each side, so its output has `(x.length / 2 + 22) * sps` samples.
+
+## Limitations
+
+- `nperseg` and `nfft` must be powers of 2. Other values throw.
+- The only built-in window is Hann. Pass an array for others, such as Hamming or Blackman.
+- Detrending removes the mean or nothing. There is no linear detrend.
+- Spectra are one-sided (DC to Nyquist), because inputs are assumed real.
+- `upconvert`/`downconvert` use a fixed root raised cosine pulse (β = 0.25) and integer `sps` only.
+- No TypeScript declarations yet. The JSDoc in `src/dsp.js` gives editors type hints.
+
+## Accuracy
+
+The test suite compares outputs against reference data generated by the libraries this one follows:
+
+- `welch` and `spectrogram` against **SciPy** (`scipy.signal`), typically agreeing to 1e-12 relative error.
+- `upconvert` and `downconvert` against **SignalAnalysis.jl**, to 1e-9 against a double-precision run of the same algorithm. SignalAnalysis.jl itself keeps carrier phase in `Float32`, so agreement with its raw output is about 1e-5.
+
+See [tests/README.md](tests/README.md) for details and for how to regenerate the reference data.
+
+## Development
+
 ```bash
-pnpm test
+pnpm install
+pnpm test          # all tests
+pnpm test:unit     # unit tests only
+pnpm test:scipy    # SciPy validation
+pnpm test:julia    # SignalAnalysis.jl validation
+pnpm demo          # run examples/dsp_demo.js
 ```
-
-Run specific test suites:
-```bash
-pnpm test:unit
-pnpm test:scipy
-pnpm test:julia
-```
-
-`pnpm test:scipy` and `pnpm test:julia` validate the DSP functions against reference data from SciPy and SignalAnalysis.jl. See [tests/README.md](tests/README.md) for how to regenerate that data.
-
-## Demo
-
-Run the DSP demo:
-```bash
-pnpm demo
-```
-
-## Dependencies
-
-- [fft.js](https://github.com/indutny/fft.js) - Fast Fourier Transform implementation
 
 ## License
 
-MIT
+[MIT](LICENSE)
