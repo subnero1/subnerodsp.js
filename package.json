@@ -1,14 +1,19 @@
 {
   "name": "subnerodsp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Digital signal processing in JavaScript: Welch PSD, spectrograms, and baseband/passband conversion",
   "type": "module",
   "main": "src/dsp.js",
+  "types": "src/dsp.d.ts",
   "exports": {
-    ".": "./src/dsp.js"
+    ".": {
+      "types": "./src/dsp.d.ts",
+      "default": "./src/dsp.js"
+    }
   },
   "files": [
-    "src/dsp.js"
+    "src/dsp.js",
+    "src/dsp.d.ts"
   ],
   "scripts": {
     "test": "node --test src/dsp_test.js tests/scipy_validation_test.js tests/signalanalysis_validation_test.js",
