@@ -2,7 +2,7 @@
 
 Full reference for every export of `subnerodsp`. For an introduction, installation and usage guidance, see the [README](../README.md).
 
-All functions accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays. Sampling rates must be finite and positive. Spectral segment and FFT lengths must be integer powers of two, at least 2, within fft.js's supported range. Overlap must be a nonnegative integer smaller than the segment length. Custom windows must contain finite samples and have finite, positive energy. Spectrum scaling and spectrogram dB mode also require a finite, nonzero window sum.
+All functions accept plain JavaScript arrays and numeric typed arrays such as `Float32Array`, `Float64Array`, and integer typed arrays. Sampling rates must be finite and positive. Spectral segment and FFT lengths must be integer powers of two, at least 2, within the supported range of the bundled fft.js. Overlap must be a nonnegative integer smaller than the segment length. Custom windows must contain finite samples and have finite, positive energy. Spectrum scaling and spectrogram dB mode also require a finite, nonzero window sum.
 
 ## `welch(x, options)`
 
@@ -309,7 +309,7 @@ Typed-array inputs are read directly into reusable FFT work buffers. Both stream
 
 ### Power-of-2 Requirement
 
-Due to fft.js requirements, `nperseg` and `nfft` **must be powers of 2**:
+Due to the requirements of the bundled fft.js, `nperseg` and `nfft` **must be powers of 2**:
 - Valid: 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, etc.
 - Invalid: 100, 200, 300, 500, etc.
 
@@ -332,7 +332,7 @@ For `WelchStream`, `process()` throws if `samples.length < stream.needed` (`nper
 
 ### Analytic Signal Length
 
-`downconvert()` computes the analytic signal at the original input length. Power-of-two lengths use fft.js directly; other lengths use Bluestein's chirp convolution with fft.js. The convolution uses padding internally without changing the signal's DFT length. Both paths take O(n log n) time, though arbitrary lengths need more work and temporary memory. As in SignalAnalysis.jl, the Hilbert transform assumes that the input block repeats periodically. Discontinuities between the end and beginning can cause boundary effects.
+`downconvert()` computes the analytic signal at the original input length. Power-of-two lengths use the bundled fft.js directly; other lengths use Bluestein's chirp convolution built on it. The convolution uses padding internally without changing the signal's DFT length. Both paths take O(n log n) time, though arbitrary lengths need more work and temporary memory. As in SignalAnalysis.jl, the Hilbert transform assumes that the input block repeats periodically. Discontinuities between the end and beginning can cause boundary effects.
 
 ### Carrier Phase Precision
 
@@ -345,7 +345,7 @@ SignalAnalysis.jl stores its frame rate as `Float32`, so its carrier phase axis 
 
 ## Implementation Details
 
-- Uses `realTransform` from fft.js for ~40% faster FFT on real signals
+- Uses `realTransform` from the bundled fft.js for ~40% faster FFT on real signals
 - Returns one-sided spectrum for real-valued inputs (DC to Nyquist)
 - Applies proper normalization for both 'density' and 'spectrum' scaling
 - Supports detrending to remove DC offset before FFT

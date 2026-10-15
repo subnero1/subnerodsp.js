@@ -6,16 +6,16 @@ Spectral analysis and baseband/passband conversion for JavaScript, in the browse
 - **Streaming, allocation-free** versions of both, for live displays, Web Workers and audio callbacks
 - **Upconversion and downconversion** between complex baseband and real passband, ported from [SignalAnalysis.jl](https://github.com/org-arl/SignalAnalysis.jl)
 - Accepts plain arrays and any numeric typed array (`Float32Array`, `Float64Array`, `Int16Array`, ...)
-- Pure ES modules with a single dependency, [fft.js](https://github.com/indutny/fft.js)
+- Pure ES modules with no runtime dependencies
 
 ## Installation
 
 Install from GitHub with any package manager:
 
 ```bash
-pnpm add github:subnero1/subnerodsp.js#v1.1.0
+pnpm add github:subnero1/subnerodsp.js#v1.2.0
 # or
-npm install github:subnero1/subnerodsp.js#v1.1.0
+npm install github:subnero1/subnerodsp.js#v1.2.0
 ```
 
 Everything is exported from the package root:
@@ -24,7 +24,13 @@ Everything is exported from the package root:
 import { welch, spectrogram, WelchStream, SpectrogramStream, upconvert, downconvert } from 'subnerodsp';
 ```
 
-Requires an ES module environment: Node.js 18 or later, or any modern browser via a bundler such as Vite.
+Requires an ES module environment: Node.js 18 or later, or any modern browser, with or without a bundler. Browsers can also load it directly from a CDN:
+
+```html
+<script type="module">
+  import { welch } from 'https://cdn.jsdelivr.net/gh/subnero1/subnerodsp.js@v1.2.0/src/dsp.js';
+</script>
+```
 
 TypeScript declarations are included in `src/dsp.d.ts`, along with the option types (`SpectrogramOptions`, `WelchStreamOptions`, ...).
 
@@ -164,6 +170,10 @@ See [tests/README.md](tests/README.md) for details and for how to regenerate the
 
 ## Release notes
 
+### v1.2.0
+
+- Bundle [fft.js](https://github.com/indutny/fft.js) v4.0.4 as an ES module in `src/fft.js`, removing the only runtime dependency. The package now loads natively in browsers and Web Workers without a bundler. FFT results are unchanged.
+
 ### v1.1.0
 
 - Ship TypeScript declarations for the full public API, exported through the `types` condition of the package root.
@@ -192,3 +202,5 @@ When changing the public API, update the declarations in `src/dsp.d.ts` to match
 ## License
 
 [MIT](LICENSE)
+
+`src/fft.js` is [fft.js](https://github.com/indutny/fft.js) by Fedor Indutny, MIT licensed. Its license notice is in the file header.

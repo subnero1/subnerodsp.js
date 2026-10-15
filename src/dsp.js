@@ -1,4 +1,4 @@
-import FFT from 'fft.js';
+import FFT from './fft.js';
 
 /**
  * Checks whether a value is a plain array or a numeric typed array.
